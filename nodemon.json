@@ -1,0 +1,25 @@
+{
+  "watch": [
+    "controllers/",
+    "services/",
+    "routes/",
+    "middleware/",
+    "utils/",
+    "index.js"
+  ],
+  "ext": "js,json",
+  "ignore": [
+    "node_modules/",
+    "uploads/",
+    "converted/",
+    "zips/",
+    "test-uploads/",
+    "test-converted/",
+    "test-zips/"
+  ],
+  "delay": "1000",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "verbose": true
+}
