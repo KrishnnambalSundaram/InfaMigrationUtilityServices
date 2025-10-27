@@ -126,7 +126,7 @@ app.use(errorHandler);
 
 const start = async()=>{
   try {
-    await connectDB()
+    // await connectDB()
     server.listen(PORT, () => {
       logger.info(`🚀 Server listening on port ${PORT}`, {
         port: PORT,

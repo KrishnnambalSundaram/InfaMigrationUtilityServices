@@ -28,9 +28,13 @@ CRITICAL REQUIREMENTS:
 3. Convert Oracle-specific syntax to Snowflake equivalents
 4. For complex PL/SQL procedures, convert to Snowflake JavaScript stored procedures
 5. For simple SQL statements, convert to Snowflake SQL syntax
-6. Add comments starting with -- TODO: for constructs that need manual review
-7. Preserve all comments from the original code
-8. Output ONLY the converted code - no explanations or additional text
+6. Output ONLY clean, executable Snowflake code - NO comments, headers, or explanations
+7. Do NOT add any conversion headers, timestamps, or migration comments
+8. Do NOT add TODO comments or explanatory text
+9. Output ONLY the converted code - no markdown formatting or additional text
+10. Ensure the code is syntactically correct and ready to run in Snowflake
+11. Use proper Snowflake JavaScript syntax and API calls
+12. Handle all variables and data types correctly for Snowflake
 
 SNOWFLAKE CONVERSION GUIDELINES:
 - Oracle VARCHAR2 → Snowflake VARCHAR
@@ -54,15 +58,19 @@ SNOWFLAKE CONVERSION GUIDELINES:
 JAVASCRIPT STORED PROCEDURE CONVERSION:
 - Use CREATE OR REPLACE PROCEDURE syntax
 - Convert PL/SQL blocks to JavaScript functions
-- Use Snowflake JavaScript API for database operations
+- Use Snowflake JavaScript API for database operations (stmt.execute(), stmt.getQueryId(), etc.)
 - Handle exceptions with try/catch blocks
-- Use Snowflake session variables for parameters
+- Use proper parameter binding (:1, :2, etc.)
+- Use correct Snowflake JavaScript variable declarations (var, let, const)
+- Ensure all SQL statements are properly formatted for Snowflake
 
 OUTPUT FORMAT:
-- Start with conversion header comment
-- Include original file name and conversion timestamp
-- Output clean, executable Snowflake code
-- No markdown formatting or explanations`;
+- Output ONLY clean, executable Snowflake code
+- NO comments, headers, timestamps, or explanations
+- NO markdown formatting
+- Start directly with CREATE OR REPLACE statements
+- Ensure code is syntactically correct and ready to execute
+- Use proper Snowflake JavaScript syntax throughout`;
 
       const userPrompt = `Convert the following Oracle code to Snowflake. Keep schema object names consistent.
 
@@ -90,11 +98,10 @@ ${oracleCode}`;
 
       const snowflakeCode = response.choices[0].message.content;
       
-      // Clean up the response and add conversion header
+      // Clean up the response - no headers, just clean working code
       const cleanedCode = this.cleanSnowflakeCode(snowflakeCode, fileName);
-      const codeWithHeader = this.addConversionHeader(cleanedCode, fileName);
       
-      return codeWithHeader;
+      return cleanedCode;
     } catch (error) {
       console.error('Error converting Oracle to Snowflake:', error);
       throw error;
@@ -113,9 +120,62 @@ ${oracleCode}`;
     cleaned = cleaned.replace(/^The converted code:\s*\n/gm, '');
     cleaned = cleaned.replace(/^Here's the conversion:\s*\n/gm, '');
     cleaned = cleaned.replace(/^Converted to Snowflake:\s*\n/gm, '');
+    cleaned = cleaned.replace(/^Here's the Snowflake equivalent:\s*\n/gm, '');
+    cleaned = cleaned.replace(/^The Snowflake version:\s*\n/gm, '');
+    cleaned = cleaned.replace(/^Here's how to convert.*?\n/gm, '');
+    cleaned = cleaned.replace(/^The equivalent.*?\n/gm, '');
     
-    // Remove lines that start with explanatory text
-    cleaned = cleaned.replace(/^.*?(?:converted|snowflake|oracle|migration|equivalent|replacement).*?\n/gm, '');
+    // Remove conversion headers and comments
+    cleaned = cleaned.replace(/^-- Converted by.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Original File:.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Conversion Date:.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Target Platform:.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Migration Utility.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Conversion of.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Converted from.*?\n/gm, '');
+    cleaned = cleaned.replace(/^-- Conversion Timestamp:.*?\n/gm, '');
+    
+    // Remove lines that start with explanatory text or comments
+    cleaned = cleaned.replace(/^.*?(?:converted|snowflake|oracle|migration|equivalent|replacement|TODO|NOTE|WARNING|conversion|migrated).*?\n/gm, '');
+    
+    // Remove empty comment lines and standalone comments
+    cleaned = cleaned.replace(/^--\s*$/gm, '');
+    cleaned = cleaned.replace(/^--\s*[A-Za-z].*?\n/gm, '');
+    
+    // Remove any lines that don't start with CREATE, ALTER, DROP, or other SQL keywords
+    // But keep the actual SQL content
+    const lines = cleaned.split('\n');
+    const filteredLines = lines.filter(line => {
+      const trimmed = line.trim();
+      // Keep empty lines, SQL statements, and JavaScript code
+      return trimmed === '' || 
+             trimmed.startsWith('CREATE') || 
+             trimmed.startsWith('ALTER') || 
+             trimmed.startsWith('DROP') || 
+             trimmed.startsWith('INSERT') || 
+             trimmed.startsWith('UPDATE') || 
+             trimmed.startsWith('DELETE') || 
+             trimmed.startsWith('SELECT') || 
+             trimmed.startsWith('WITH') ||
+             trimmed.startsWith('$$') ||
+             trimmed.startsWith('RETURNS') ||
+             trimmed.startsWith('LANGUAGE') ||
+             trimmed.startsWith('AS') ||
+             trimmed.startsWith('var ') ||
+             trimmed.startsWith('let ') ||
+             trimmed.startsWith('const ') ||
+             trimmed.startsWith('try {') ||
+             trimmed.startsWith('catch') ||
+             trimmed.startsWith('} catch') ||
+             trimmed.startsWith('}') ||
+             trimmed.startsWith('{') ||
+             trimmed.startsWith('    ') ||
+             trimmed.startsWith('\t') ||
+             trimmed.match(/^[A-Za-z_][A-Za-z0-9_]*\s*[=:]/) || // Variable assignments
+             trimmed.match(/^[A-Za-z_][A-Za-z0-9_]*\s*\(/); // Function calls
+    });
+    
+    cleaned = filteredLines.join('\n');
     
     // Remove multiple consecutive empty lines
     cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
@@ -124,18 +184,6 @@ ${oracleCode}`;
     cleaned = cleaned.trim();
     
     return cleaned;
-  }
-
-  addConversionHeader(snowflakeCode, fileName) {
-    const timestamp = new Date().toISOString();
-    const header = `-- Converted by Inflecto Migration Utility
--- Original File: ${fileName}
--- Conversion Date: ${timestamp}
--- Target Platform: Snowflake
-
-`;
-
-    return header + snowflakeCode;
   }
 
   async findOracleFiles(dirPath) {
@@ -194,10 +242,13 @@ ${oracleCode}`;
     
     // Determine output file extension based on content analysis
     let outputExt = '.sql';
+    
+    // Convert complex PL/SQL to JavaScript stored procedures
     if (fileType === 'plsql' || fileType === 'pls') {
-      outputExt = '.js'; // Convert PL/SQL procedures to JavaScript stored procedures
+      outputExt = '.js';
     }
     
+    // Add Snowflake suffix to distinguish from original files
     return `${baseName}__sf${outputExt}`;
   }
 
@@ -206,28 +257,36 @@ ${oracleCode}`;
       const content = await fs.readFile(filePath, 'utf8');
       const upperContent = content.toUpperCase();
       
-      // Check for PL/SQL specific constructs
+      // Check for PL/SQL specific constructs that need JavaScript conversion
       if (upperContent.includes('CREATE OR REPLACE PROCEDURE') ||
           upperContent.includes('CREATE OR REPLACE FUNCTION') ||
           upperContent.includes('CREATE OR REPLACE PACKAGE') ||
           upperContent.includes('DECLARE') ||
           upperContent.includes('BEGIN') ||
           upperContent.includes('END;') ||
-          upperContent.includes('EXCEPTION')) {
+          upperContent.includes('EXCEPTION') ||
+          upperContent.includes('CURSOR') ||
+          upperContent.includes('LOOP') ||
+          upperContent.includes('IF') && upperContent.includes('THEN') ||
+          upperContent.includes('WHILE') ||
+          upperContent.includes('FOR')) {
         return 'plsql';
       }
       
-      // Check for SQL statements
+      // Check for SQL statements (DDL, DML, DQL)
       if (upperContent.includes('SELECT') ||
           upperContent.includes('INSERT') ||
           upperContent.includes('UPDATE') ||
           upperContent.includes('DELETE') ||
           upperContent.includes('CREATE TABLE') ||
-          upperContent.includes('CREATE VIEW')) {
+          upperContent.includes('CREATE VIEW') ||
+          upperContent.includes('CREATE INDEX') ||
+          upperContent.includes('CREATE SEQUENCE') ||
+          upperContent.includes('CREATE TRIGGER')) {
         return 'sql';
       }
       
-      return 'sql'; // Default to SQL
+      return 'sql'; // Default to SQL for safety
     } catch (error) {
       console.error(`Error analyzing file type for ${filePath}:`, error);
       return 'sql';
