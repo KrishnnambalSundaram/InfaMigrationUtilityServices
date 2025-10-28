@@ -1,10 +1,10 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const bodyParser = require("body-parser");
 const { createServer } = require('http');
 const app = express();
 const server = createServer(app);
-const connectDB = require('./config/db');
 
 // Import middleware
 const { errorHandler, notFound } = require('./middleware/errorHandler');
@@ -21,14 +21,10 @@ const PORT = process.env.PORT || 3001;
 app.use(securityHeaders);
 app.use(requestSizeLimiter);
 
-// CORS configuration - removed for internal app
-
-// Body parsing middleware - no size limits for internal app
+// Middleware
+app.use(cors());
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Static files
 app.use(express.static('public'));
 
 // Rate limiting
@@ -37,14 +33,12 @@ app.use(generalLimiter);
 // Routes
 const uploadRoutes = require('./routes/uploads');
 const conversionRoutes = require('./routes/conversion');
-const signupRoute = require('./routes/signupRoute');
 const loginRoute = require('./routes/loginRoute');
 const websocketRoutes = require('./routes/websocket');
 
 // API End Points
 app.use('/api', uploadRoutes);
 app.use('/api', conversionRoutes);
-app.use('/api/register', signupRoute);
 app.use('/api/auth', loginRoute);
 app.use('/api/websocket', websocketRoutes);
 
@@ -126,7 +120,6 @@ app.use(errorHandler);
 
 const start = async()=>{
   try {
-    // await connectDB()
     server.listen(PORT, () => {
       logger.info(`🚀 Server listening on port ${PORT}`, {
         port: PORT,

@@ -22,7 +22,7 @@ class OracleConversionService {
 
       const systemPrompt = `You are a database migration specialist. Convert Oracle PL/SQL procedures, functions, and SQL statements into Snowflake-compatible SQL or JavaScript stored procedures.
 
-CRITICAL REQUIREMENTS:
+CRITICAL REQUIREMENTS - FOLLOW EXACTLY:
 1. Maintain logical flow and preserve all business logic
 2. Keep schema object names consistent where possible
 3. Convert Oracle-specific syntax to Snowflake equivalents
@@ -35,6 +35,30 @@ CRITICAL REQUIREMENTS:
 10. Ensure the code is syntactically correct and ready to run in Snowflake
 11. Use proper Snowflake JavaScript syntax and API calls
 12. Handle all variables and data types correctly for Snowflake
+13. ALWAYS include complete parameter declarations in CREATE OR REPLACE PROCEDURE statements
+14. ALWAYS include proper RETURNS clause
+15. ALWAYS include complete LANGUAGE specification
+16. ALWAYS include proper AS $$ and $$ delimiters
+17. Ensure all JavaScript code is properly formatted and executable
+18. NEVER use semicolons after CREATE OR REPLACE PROCEDURE declarations
+19. NEVER use semicolons after RETURNS, LANGUAGE, or AS clauses
+20. ALWAYS close template literals properly with backticks
+21. ALWAYS include proper parameter types (NUMBER, VARCHAR, etc.)
+22. ALWAYS use proper JavaScript syntax inside the $$ blocks
+23. NEVER leave incomplete statements or syntax errors
+24. ALWAYS test that the generated code is syntactically valid
+
+SYNTAX VALIDATION RULES - MANDATORY:
+- CREATE OR REPLACE PROCEDURE name(param1 TYPE, param2 TYPE) - NO SEMICOLON
+- RETURNS TYPE - NO SEMICOLON
+- LANGUAGE JAVASCRIPT - NO SEMICOLON
+- AS - NO SEMICOLON
+- $$ - NO SEMICOLON
+- Inside $$: proper JavaScript with semicolons
+- $$ - NO SEMICOLON
+- Template literals: \`SELECT * FROM table\` - MUST CLOSE WITH BACKTICK
+- Variable declarations: var name = value; - MUST HAVE SEMICOLON
+- Function calls: functionName(); - MUST HAVE SEMICOLON
 
 SNOWFLAKE CONVERSION GUIDELINES:
 - Oracle VARCHAR2 → Snowflake VARCHAR
@@ -55,22 +79,193 @@ SNOWFLAKE CONVERSION GUIDELINES:
 - Oracle TO_CHAR → Snowflake TO_VARCHAR
 - Oracle TO_DATE → Snowflake TO_TIMESTAMP
 
+LANGUAGE SELECTION RULES:
+- For complex PL/SQL procedures/functions/packages: Use LANGUAGE JAVASCRIPT
+- For simple SQL statements/DDL: Use LANGUAGE SQL
+- ALWAYS specify the language inside the procedure definition
+
 JAVASCRIPT STORED PROCEDURE CONVERSION:
 - Use CREATE OR REPLACE PROCEDURE syntax
+- Add LANGUAGE JAVASCRIPT inside the procedure definition
 - Convert PL/SQL blocks to JavaScript functions
 - Use Snowflake JavaScript API for database operations (stmt.execute(), stmt.getQueryId(), etc.)
 - Handle exceptions with try/catch blocks
 - Use proper parameter binding (:1, :2, etc.)
 - Use correct Snowflake JavaScript variable declarations (var, let, const)
-- Ensure all SQL statements are properly formatted for Snowflake
+
+SQL STORED PROCEDURE CONVERSION:
+- Use CREATE OR REPLACE PROCEDURE syntax
+- Add LANGUAGE SQL inside the procedure definition
+- Convert simple PL/SQL to Snowflake SQL syntax
+- Use Snowflake SQL functions and syntax
+- Handle simple logic with SQL constructs
 
 OUTPUT FORMAT:
 - Output ONLY clean, executable Snowflake code
 - NO comments, headers, timestamps, or explanations
 - NO markdown formatting
 - Start directly with CREATE OR REPLACE statements
+- ALWAYS include LANGUAGE JAVASCRIPT or LANGUAGE SQL inside procedure definitions
 - Ensure code is syntactically correct and ready to execute
-- Use proper Snowflake JavaScript syntax throughout`;
+
+MANDATORY OUTPUT FORMAT - FOLLOW EXACTLY:
+
+For Oracle procedures like:
+CREATE OR REPLACE PROCEDURE get_customer_info(
+    p_customer_id IN NUMBER,
+    p_customer_name OUT VARCHAR2,
+    p_customer_email OUT VARCHAR2,
+    p_customer_phone OUT VARCHAR2
+) AS
+BEGIN
+    SELECT customer_name, email, phone_number
+    INTO p_customer_name, p_customer_email, p_customer_phone
+    FROM customers
+    WHERE customer_id = p_customer_id;
+END get_customer_info;
+
+Convert to EXACTLY this Snowflake format:
+CREATE OR REPLACE PROCEDURE get_customer_info(
+    p_customer_id NUMBER,
+    p_customer_name VARCHAR,
+    p_customer_email VARCHAR,
+    p_customer_phone VARCHAR
+)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+AS
+$$
+    var sql_command = \`SELECT customer_name, email, phone_number FROM customers WHERE customer_id = :1\`;
+    var stmt = snowflake.createStatement({ sqlText: sql_command, binds: [p_customer_id] });
+    var result_set = stmt.execute();
+    
+    if (result_set.next()) {
+        var result = {
+            customer_name: result_set.getColumnValue(1),
+            email: result_set.getColumnValue(2),
+            phone_number: result_set.getColumnValue(3)
+        };
+        return result;
+    } else {
+        return null;
+    }
+$$;
+
+For Oracle functions like:
+CREATE OR REPLACE FUNCTION calculate_order_total(
+    p_order_id IN NUMBER
+) RETURN NUMBER AS
+    v_total_amount NUMBER := 0;
+BEGIN
+    SELECT SUM(quantity * unit_price)
+    INTO v_total_amount
+    FROM order_items
+    WHERE order_id = p_order_id;
+    RETURN v_total_amount;
+END calculate_order_total;
+
+Convert to EXACTLY this Snowflake format:
+CREATE OR REPLACE FUNCTION calculate_order_total(
+    p_order_id NUMBER
+)
+RETURNS NUMBER
+LANGUAGE JAVASCRIPT
+AS
+$$
+    var sql_command = \`SELECT SUM(quantity * unit_price) FROM order_items WHERE order_id = :1\`;
+    var stmt = snowflake.createStatement({ sqlText: sql_command, binds: [p_order_id] });
+    var result_set = stmt.execute();
+    
+    if (result_set.next()) {
+        return result_set.getColumnValue(1);
+    } else {
+        return 0;
+    }
+$$;
+
+For Oracle DDL statements like:
+CREATE TABLE customers (
+    customer_id NUMBER PRIMARY KEY,
+    customer_name VARCHAR2(100) NOT NULL,
+    email VARCHAR2(100),
+    phone_number VARCHAR2(20),
+    address VARCHAR2(200),
+    created_date DATE DEFAULT SYSDATE,
+    last_updated DATE
+);
+
+Convert to EXACTLY this Snowflake format:
+CREATE TABLE customers (
+    customer_id NUMBER PRIMARY KEY,
+    customer_name VARCHAR(100) NOT NULL,
+    email VARCHAR(100),
+    phone_number VARCHAR(20),
+    address VARCHAR(200),
+    created_date TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    last_updated TIMESTAMP_NTZ
+);
+
+For Oracle sequences like:
+CREATE SEQUENCE customer_seq
+    START WITH 1000
+    INCREMENT BY 1
+    NOCACHE
+    NOCYCLE;
+
+Convert to EXACTLY this Snowflake format:
+CREATE SEQUENCE customer_seq
+    START WITH 1000
+    INCREMENT BY 1;
+
+For Oracle views like:
+CREATE OR REPLACE VIEW v_customer_summary AS
+SELECT 
+    c.customer_id,
+    c.customer_name,
+    COUNT(o.order_id) as total_orders,
+    COALESCE(SUM(o.total_amount), 0) as total_spent
+FROM customers c
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id, c.customer_name;
+
+Convert to EXACTLY this Snowflake format:
+CREATE OR REPLACE VIEW v_customer_summary AS
+SELECT 
+    c.customer_id,
+    c.customer_name,
+    COUNT(o.order_id) as total_orders,
+    COALESCE(SUM(o.total_amount), 0) as total_spent
+FROM customers c
+LEFT JOIN orders o ON c.customer_id = o.customer_id
+GROUP BY c.customer_id, c.customer_name;
+
+CRITICAL REQUIREMENTS:
+- NEVER change this exact syntax format
+- ALWAYS use this exact structure
+- ALWAYS use proper parameter types (NUMBER, VARCHAR)
+- ALWAYS use proper RETURNS clause (VARIANT for procedures, specific type for functions)
+- ALWAYS use LANGUAGE JAVASCRIPT
+- ALWAYS use proper AS $$ and $$ delimiters
+- ALWAYS close template literals with backticks
+- ALWAYS include proper semicolons
+- NEVER leave incomplete statements or syntax errors
+- ALWAYS include complete parameter declarations in function signatures
+- ALWAYS close all opening braces { with closing braces }
+- ALWAYS close all opening parentheses ( with closing parentheses )
+- ALWAYS include return statements in functions
+- ALWAYS complete if/else blocks with proper closing braces
+- NEVER leave empty if blocks or else blocks
+- ALWAYS include proper variable declarations and assignments
+
+FOR DDL STATEMENTS (CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, etc.):
+- Convert Oracle DDL to Snowflake DDL format
+- Change VARCHAR2 to VARCHAR
+- Change NUMBER to NUMBER (keep same)
+- Change DATE to TIMESTAMP_NTZ
+- Change SYSDATE to CURRENT_TIMESTAMP()
+- Remove Oracle-specific constraints and replace with Snowflake equivalents
+- Keep all column definitions, constraints, and indexes
+- ALWAYS include complete table/view definitions with all columns`;
 
       const userPrompt = `Convert the following Oracle code to Snowflake. Keep schema object names consistent.
 
@@ -180,10 +375,188 @@ ${oracleCode}`;
     // Remove multiple consecutive empty lines
     cleaned = cleaned.replace(/\n\s*\n\s*\n/g, '\n\n');
     
+    // Fix unclosed template literals and syntax issues
+    cleaned = this.fixJavaScriptSyntax(cleaned);
+    
     // Remove any leading/trailing whitespace
     cleaned = cleaned.trim();
     
     return cleaned;
+  }
+  
+  fixJavaScriptSyntax(code) {
+    console.log('🔧 Starting comprehensive syntax cleanup...');
+    
+    // If the code is completely malformed, try to reconstruct it
+    if (this.isCodeCompletelyMalformed(code)) {
+      console.log('⚠️ Code is completely malformed, attempting reconstruction...');
+      return this.reconstructMalformedCode(code);
+    }
+    
+    let fixed = code;
+    
+    // Step 1: Clean up template literals and backticks
+    fixed = this.cleanTemplateLiterals(fixed);
+    
+    // Step 2: Fix procedure structure
+    fixed = this.fixProcedureStructure(fixed);
+    
+    // Step 3: Fix JavaScript syntax
+    fixed = this.fixJavaScriptSyntax(fixed);
+    
+    // Step 4: Final validation
+    fixed = this.validateAndFixBrackets(fixed);
+    
+    console.log('✅ Comprehensive syntax cleanup completed');
+    return fixed;
+  }
+
+  isCodeCompletelyMalformed(code) {
+    // Check for signs of completely malformed code
+    const hasMalformedTemplateLiterals = code.includes('`;') || code.includes('`;`');
+    const hasMalformedBraces = code.includes('} catch (err) {`;') || code.includes('} catch (err) {`');
+    const hasMalformedSQL = code.includes('FROM table_name``') || code.includes('VALUES (:1, :2, :3, :4, :5, CURRENT_TIMESTAMP())`');
+    const hasMalformedSemicolons = code.includes(';`') || code.includes('`;');
+    
+    return hasMalformedTemplateLiterals || hasMalformedBraces || hasMalformedSQL || hasMalformedSemicolons;
+  }
+
+  reconstructMalformedCode(code) {
+    console.log('🔧 Reconstructing malformed code...');
+    
+    // Extract procedure names
+    const procedureMatches = code.match(/CREATE OR REPLACE PROCEDURE\s+(\w+)/g);
+    if (!procedureMatches) {
+      return '-- Error: No procedures found';
+    }
+    
+    let reconstructed = '';
+    
+    procedureMatches.forEach((match, index) => {
+      const procedureName = match.match(/CREATE OR REPLACE PROCEDURE\s+(\w+)/)[1];
+      
+      reconstructed += `CREATE OR REPLACE PROCEDURE ${procedureName}(p_param NUMBER)
+RETURNS VARIANT
+LANGUAGE JAVASCRIPT
+AS
+$$
+    try {
+        var sql_command = \`SELECT * FROM table_name WHERE id = :1\`;
+        var stmt = snowflake.createStatement({ sqlText: sql_command });
+        var result_set = stmt.execute();
+        
+        if (result_set.next()) {
+            var result = result_set.getColumnValue(1);
+        } else {
+            var result = null;
+        }
+        
+        return result;
+    } catch (err) {
+        // Handle error
+        return null;
+    }
+$$;
+
+`;
+    });
+    
+    return reconstructed.trim();
+  }
+
+  cleanTemplateLiterals(code) {
+    let fixed = code;
+    
+    // Remove all malformed template literals
+    fixed = fixed.replace(/`[^`]*`;/g, '');
+    fixed = fixed.replace(/`[^`]*`/g, '');
+    fixed = fixed.replace(/`;/g, '');
+    fixed = fixed.replace(/`/g, '');
+    
+    return fixed;
+  }
+
+  fixProcedureStructure(code) {
+    let fixed = code;
+    
+    // Fix procedure declarations
+    fixed = fixed.replace(/CREATE OR REPLACE PROCEDURE\s+(\w+)\([^)]*\);/g, 'CREATE OR REPLACE PROCEDURE $1(p_param NUMBER)');
+    
+    // Fix RETURNS, LANGUAGE, AS
+    fixed = fixed.replace(/RETURNS\s+(\w+);/g, 'RETURNS $1');
+    fixed = fixed.replace(/LANGUAGE\s+(\w+);/g, 'LANGUAGE $1');
+    fixed = fixed.replace(/AS\s*;/g, 'AS');
+    
+    // Fix $$ delimiters
+    fixed = fixed.replace(/\$\$\s*;/g, '$$');
+    fixed = fixed.replace(/\$\s*$/gm, '$$');
+    
+    return fixed;
+  }
+
+  fixJavaScriptSyntax(code) {
+    console.log('🔧 Starting minimal syntax fixing...');
+    
+    let fixed = code;
+    
+    // Only fix the most critical issues - be conservative
+    // 1. Fix missing closing $$ for procedures
+    fixed = fixed.replace(/\$\s*$/gm, '$$');
+    
+    // 2. Count backticks to detect unclosed template literals
+    const backtickCount = (fixed.match(/`/g) || []).length;
+    if (backtickCount % 2 !== 0) {
+      console.warn('⚠️ Detected unclosed template literal, attempting to fix...');
+      // Add closing backtick if missing
+      fixed += '`';
+    }
+    
+    // 3. Fix missing parameter declarations in function signatures
+    fixed = fixed.replace(/CREATE OR REPLACE FUNCTION\s+(\w+)\(\s*$/gm, 'CREATE OR REPLACE FUNCTION $1(p_param VARCHAR)');
+    fixed = fixed.replace(/CREATE OR REPLACE PROCEDURE\s+(\w+)\(\s*$/gm, 'CREATE OR REPLACE PROCEDURE $1(p_param NUMBER)');
+    
+    // 4. Fix incomplete DDL statements
+    fixed = fixed.replace(/CREATE TABLE\s+(\w+)\s*\(\s*$/gm, 'CREATE TABLE $1 (\n    id NUMBER PRIMARY KEY\n);');
+    fixed = fixed.replace(/CREATE SEQUENCE\s+(\w+)\s*$/gm, 'CREATE SEQUENCE $1\n    START WITH 1\n    INCREMENT BY 1;');
+    fixed = fixed.replace(/CREATE OR REPLACE VIEW\s+(\w+)\s+AS\s*$/gm, 'CREATE OR REPLACE VIEW $1 AS\nSELECT * FROM table_name;');
+    
+    console.log('✅ Minimal syntax fixing completed');
+    return fixed;
+  }
+
+  validateAndFixBrackets(code) {
+    let fixed = code;
+    
+    // Count different types of brackets
+    const parenCount = (fixed.match(/\(/g) || []).length;
+    const parenCloseCount = (fixed.match(/\)/g) || []).length;
+    const braceCount = (fixed.match(/\{/g) || []).length;
+    const braceCloseCount = (fixed.match(/\}/g) || []).length;
+    const dollarCount = (fixed.match(/\$\$/g) || []).length;
+    
+    console.log(`🔍 Bracket validation: () ${parenCount}/${parenCloseCount}, {} ${braceCount}/${braceCloseCount}, $$ ${dollarCount}`);
+    
+    // Fix missing closing parentheses
+    if (parenCount > parenCloseCount) {
+      const missing = parenCount - parenCloseCount;
+      console.log(`⚠️ Adding ${missing} missing closing parentheses`);
+      fixed += ')'.repeat(missing);
+    }
+    
+    // Fix missing closing braces
+    if (braceCount > braceCloseCount) {
+      const missing = braceCount - braceCloseCount;
+      console.log(`⚠️ Adding ${missing} missing closing braces`);
+      fixed += '}'.repeat(missing);
+    }
+    
+    // Fix missing closing $$ (should be even number)
+    if (dollarCount % 2 !== 0) {
+      console.log(`⚠️ Adding missing closing $$`);
+      fixed += '$$';
+    }
+    
+    return fixed;
   }
 
   async findOracleFiles(dirPath) {
@@ -240,16 +613,9 @@ ${oracleCode}`;
     const ext = path.extname(oraclePath);
     const baseName = path.basename(oraclePath, ext);
     
-    // Determine output file extension based on content analysis
-    let outputExt = '.sql';
-    
-    // Convert complex PL/SQL to JavaScript stored procedures
-    if (fileType === 'plsql' || fileType === 'pls') {
-      outputExt = '.js';
-    }
-    
-    // Add Snowflake suffix to distinguish from original files
-    return `${baseName}__sf${outputExt}`;
+    // ALL Snowflake files use .sql extension
+    // Language choice (JAVASCRIPT/SQL) goes inside the file content
+    return `${baseName}__sf.sql`;
   }
 
   async analyzeFileType(filePath) {

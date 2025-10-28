@@ -1,19 +1,27 @@
-const User = require("../models/user");
-const bcrypt = require("bcrypt");
 const {generateToken} = require("../utils/jwtUtils");
 
-async function login(email,password) {
+async function login(email, password) {
     try {
-        const existingUser=await User.findOne({email});
-        if(!existingUser){
-            throw new Error("User not found");
+        // Hardcoded admin credentials
+        const ADMIN_EMAIL = "admin@admin.com";
+        const ADMIN_PASSWORD = "Admin@123";
+        
+        // Check if credentials match admin
+        if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+            // Create admin user object
+            const adminUser = {
+                _id: "admin_user_id",
+                email: ADMIN_EMAIL,
+                firstName: "Admin",
+                lastName: "User",
+                role: "admin"
+            };
+            
+            const token = generateToken(adminUser);
+            return {token, existingUser: adminUser};
+        } else {
+            throw new Error("Invalid credentials");
         }
-        const isPasswordValid = await bcrypt.compare(password,existingUser.password);    
-        if(!isPasswordValid){
-            throw new Error("Incorrect password");
-        }
-        const token = generateToken(existingUser);
-        return {token, existingUser};
     } catch (error) {
         throw new Error(error.message);
     }

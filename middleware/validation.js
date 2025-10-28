@@ -16,35 +16,6 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-// User registration validation
-const validateUserRegistration = [
-  body('name')
-    .trim()
-    .isLength({ min: 2, max: 50 })
-    .withMessage('Name must be between 2 and 50 characters')
-    .matches(/^[a-zA-Z\s]+$/)
-    .withMessage('Name can only contain letters and spaces'),
-  
-  body('email')
-    .isEmail()
-    .normalizeEmail()
-    .withMessage('Please provide a valid email address'),
-  
-  body('password')
-    .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters long')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-    .withMessage('Password must contain at least one lowercase letter, one uppercase letter, and one number'),
-  
-  body('companyName')
-    .optional()
-    .trim()
-    .isLength({ min: 2, max: 100 })
-    .withMessage('Company name must be between 2 and 100 characters'),
-  
-  handleValidationErrors
-];
-
 // User login validation
 const validateUserLogin = [
   body('email')
@@ -159,7 +130,6 @@ const sanitizeInput = (req, res, next) => {
 };
 
 module.exports = {
-  validateUserRegistration,
   validateUserLogin,
   validateFileUpload,
   validateJobId,

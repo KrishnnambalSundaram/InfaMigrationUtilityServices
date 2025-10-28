@@ -29,11 +29,20 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   const convertedFiles = [];
   const snowflakeFiles = [];
   
-  // Find all Oracle files
+  // Find all Oracle files and sort them by name for consistent ordering
   const oracleFiles = await oracleConversionService.findOracleFiles(extractedPath);
-  const totalFiles = oracleFiles.length;
+  const sortedOracleFiles = oracleFiles.sort((a, b) => {
+    const nameA = path.basename(a);
+    const nameB = path.basename(b);
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  const totalFiles = sortedOracleFiles.length;
   
   console.log(`Found ${totalFiles} Oracle files to convert using worker threads`);
+  console.log(`📋 Files in order:`);
+  sortedOracleFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${path.basename(file)}`);
+  });
   
   if (totalFiles === 0) {
     console.log('⚠️ No Oracle files found to convert');
@@ -45,20 +54,17 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     };
   }
   
-  // Fallback to sequential processing for small files or if workers fail
-  if (totalFiles <= 2) {
-    console.log('📝 Small file count, using sequential processing for better reliability');
-    return await convertOracleFilesWithProgress(extractedPath, analysis, jobId);
-  }
+  // Use workers for all file counts - they're more efficient
+  console.log(`📝 Processing ${totalFiles} files using worker threads`);
   
   // Create converted directory
   const convertedPath = process.env.CONVERTED_PATH || './converted';
   await fs.ensureDir(convertedPath);
   
   // Process files in parallel using worker threads
-  const maxWorkers = Math.min(4, totalFiles); // Use up to 4 workers
+  const maxWorkers = Math.min(8, totalFiles); // Use up to 8 workers
   const workers = [];
-  const fileQueue = [...oracleFiles];
+  const fileQueue = [...sortedOracleFiles];
   const results = [];
   
   console.log(`Starting ${maxWorkers} worker threads for parallel processing`);
@@ -66,11 +72,14 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   // Create workers
   for (let i = 0; i < maxWorkers; i++) {
     const worker = new Worker(path.join(__dirname, '..', 'workers', 'oracleConversionWorker.js'));
+    worker.workerId = i + 1; // Add worker ID for tracking
     workers.push(worker);
+    
+    console.log(`🔧 Created Worker ${worker.workerId}`);
     
     worker.on('message', (result) => {
       if (result.success) {
-        console.log(`✅ Worker completed: ${result.result.converted}`);
+        console.log(`✅ Worker ${worker.workerId} completed: ${result.result.converted} (${results.length + 1}/${totalFiles})`);
         results.push(result.result);
         
         // Update progress
@@ -80,16 +89,18 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
         // Process next file if available
         if (fileQueue.length > 0) {
           const nextFile = fileQueue.shift();
+          console.log(`🔄 Worker ${worker.workerId} processing next file: ${path.basename(nextFile)}`);
           worker.postMessage({
             filePath: nextFile,
             extractedPath: extractedPath,
             convertedPath: convertedPath
           });
         } else {
+          console.log(`🏁 Worker ${worker.workerId} finished all assigned files`);
           worker.terminate();
         }
       } else {
-        console.error(`❌ Worker error: ${result.error}`);
+        console.error(`❌ Worker ${worker.workerId} error: ${result.error}`);
         results.push({
           original: 'unknown',
           converted: null,
@@ -100,25 +111,34 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
         // Process next file if available
         if (fileQueue.length > 0) {
           const nextFile = fileQueue.shift();
+          console.log(`🔄 Worker ${worker.workerId} retrying with next file: ${path.basename(nextFile)}`);
           worker.postMessage({
             filePath: nextFile,
             extractedPath: extractedPath,
             convertedPath: convertedPath
           });
         } else {
+          console.log(`🏁 Worker ${worker.workerId} finished all assigned files`);
           worker.terminate();
         }
       }
     });
     
     worker.on('error', (error) => {
-      console.error(`Worker error:`, error);
+      console.error(`❌ Worker ${worker.workerId} error:`, error);
+    });
+    
+    worker.on('exit', (code) => {
+      console.log(`🔚 Worker ${worker.workerId} exited with code ${code}`);
     });
   }
   
   // Start processing files
+  console.log(`🚀 Starting ${Math.min(maxWorkers, fileQueue.length)} workers with initial files...`);
+  console.log(`📊 Queue status: ${fileQueue.length} files remaining`);
   for (let i = 0; i < Math.min(maxWorkers, fileQueue.length); i++) {
     const file = fileQueue.shift();
+    console.log(`🔄 Worker ${i + 1} starting with: ${path.basename(file)}`);
     workers[i].postMessage({
       filePath: file,
       extractedPath: extractedPath,
@@ -127,16 +147,22 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   }
   
   // Wait for all workers to complete with timeout
+  console.log(`⏳ Waiting for ${totalFiles} files to be processed by ${maxWorkers} workers...`);
+  const startTime = Date.now();
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      console.warn('⚠️ Worker timeout, falling back to sequential processing');
+      console.warn('⚠️ Worker timeout after 10 minutes');
       workers.forEach(worker => worker.terminate());
       reject(new Error('Worker timeout'));
-    }, 300000); // 5 minute timeout
+    }, 600000); // 10 minute timeout
     
     const checkCompletion = () => {
       if (results.length === totalFiles) {
         clearTimeout(timeout);
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        console.log(`🎉 All workers completed in ${duration.toFixed(2)} seconds`);
+        console.log(`📊 Performance: ${(totalFiles / duration).toFixed(2)} files/second`);
         resolve();
       } else {
         setTimeout(checkCompletion, 100);
@@ -144,9 +170,9 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     };
     checkCompletion();
   }).catch(async (error) => {
-    console.warn('⚠️ Worker processing failed, falling back to sequential:', error.message);
+    console.error('❌ Worker processing failed:', error.message);
     workers.forEach(worker => worker.terminate());
-    return await convertOracleFilesWithProgress(extractedPath, analysis, jobId);
+    throw error; // Re-throw the error instead of falling back
   });
   
   // Process results
@@ -162,6 +188,30 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     }
   }
   
+  // Sort convertedFiles by original filename to maintain consistent order in response
+  convertedFiles.sort((a, b) => {
+    const nameA = a.original || '';
+    const nameB = b.original || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  // Sort snowflakeFiles by name to maintain consistent order in zip
+  snowflakeFiles.sort((a, b) => {
+    const nameA = a.name;
+    const nameB = b.name;
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  console.log(`📋 Converted files in response order:`);
+  convertedFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${file.original} -> ${file.converted}`);
+  });
+  
+  console.log(`📋 Snowflake files in zip order:`);
+  snowflakeFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${file.name}`);
+  });
+  
   console.log(`Worker conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
@@ -174,15 +224,24 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
 }
 
 // Oracle to Snowflake conversion function with progress tracking (sequential fallback)
-async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
+async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
   const convertedFiles = [];
   const snowflakeFiles = [];
   
-  // Find all Oracle files
+  // Find all Oracle files and sort them by name for consistent ordering
   const oracleFiles = await oracleConversionService.findOracleFiles(extractedPath);
-  const totalFiles = oracleFiles.length;
+  const sortedOracleFiles = oracleFiles.sort((a, b) => {
+    const nameA = path.basename(a);
+    const nameB = path.basename(b);
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  const totalFiles = sortedOracleFiles.length;
   
   console.log(`Found ${totalFiles} Oracle files to convert`);
+  console.log(`📋 Files in order:`);
+  sortedOracleFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${path.basename(file)}`);
+  });
   
   if (totalFiles === 0) {
     console.log('⚠️ No Oracle files found to convert');
@@ -196,7 +255,7 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   
   // Process files one by one with progress updates
   for (let i = 0; i < totalFiles; i++) {
-    const currentFilePath = oracleFiles[i];
+    const currentFilePath = sortedOracleFiles[i];
     try {
       console.log(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
       
@@ -279,6 +338,30 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     }
   }
   
+  // Sort convertedFiles by original filename to maintain consistent order in response
+  convertedFiles.sort((a, b) => {
+    const nameA = a.original || '';
+    const nameB = b.original || '';
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  // Sort snowflakeFiles by name to maintain consistent order in zip
+  snowflakeFiles.sort((a, b) => {
+    const nameA = a.name;
+    const nameB = b.name;
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  console.log(`📋 Converted files in response order:`);
+  convertedFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${file.original} -> ${file.converted}`);
+  });
+  
+  console.log(`📋 Snowflake files in zip order:`);
+  snowflakeFiles.forEach((file, index) => {
+    console.log(`  ${index + 1}. ${file.name}`);
+  });
+  
   console.log(`Conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
@@ -353,8 +436,13 @@ const handleTestConversion = async (req, res) => {
     
     // Debug: List all Oracle files found
     const oracleFiles = await oracleConversionService.findOracleFiles(extractedPath);
-    console.log(`🔍 Found ${oracleFiles.length} Oracle files:`);
-    oracleFiles.forEach((file, index) => {
+    const sortedOracleFiles = oracleFiles.sort((a, b) => {
+      const nameA = path.basename(a);
+      const nameB = path.basename(b);
+      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    console.log(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
+    sortedOracleFiles.forEach((file, index) => {
       console.log(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
     });
     
@@ -533,8 +621,13 @@ const handleConvert = async (req, res) => {
     
     // Debug: List all Oracle files found
     const oracleFiles = await oracleConversionService.findOracleFiles(extractedPath);
-    console.log(`🔍 Found ${oracleFiles.length} Oracle files:`);
-    oracleFiles.forEach((file, index) => {
+    const sortedOracleFiles = oracleFiles.sort((a, b) => {
+      const nameA = path.basename(a);
+      const nameB = path.basename(b);
+      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    console.log(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
+    sortedOracleFiles.forEach((file, index) => {
       console.log(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
     });
     
@@ -666,18 +759,6 @@ async function createSnowflakeZipFile(snowflakeFiles, zipPath) {
         console.log(`📄 Added to zip: ${file.name}`);
       }
     }
-    
-    // Add conversion summary
-    const summary = {
-      conversionDate: new Date().toISOString(),
-      totalFiles: snowflakeFiles.length,
-      files: snowflakeFiles.map(f => ({
-        name: f.name,
-        type: f.fileType
-      }))
-    };
-    
-    archive.append(JSON.stringify(summary, null, 2), { name: 'conversion_summary.json' });
     
     archive.finalize();
   });
