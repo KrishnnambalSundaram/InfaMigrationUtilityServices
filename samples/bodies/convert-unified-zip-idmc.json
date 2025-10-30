@@ -1,0 +1,7 @@
+{
+  "inputType": "zip",
+  "target": "idmc",
+  "sourceType": "auto",
+  "zipFilePath": "/absolute/path/to/sql-files.zip"
+}
+

@@ -1,0 +1,7 @@
+{
+  "inputType": "single",
+  "script": "sqlplus user/pass@db @script.sql\nEXIT",
+  "fileName": "run_oracle.bat",
+  "scriptType": "oracle"
+}
+

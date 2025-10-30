@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { handleTestConversion, handleConvert, getProgress, serveZipFile } = require('../controllers/oracleConversionController');
-const authMiddleware = require('../middleware/authMiddleware');
+const { validateFileUpload, validateJobId, validateDownloadRequest, validateUnifiedConvert } = require('../middleware/validation');
+const { getProgress, serveZipFile, handleUnifiedConvert } = require('../controllers/oracleConversionController');
 const { conversionLimiter } = require('../middleware/security');
-const { validateFileUpload, validateJobId, validateDownloadRequest } = require('../middleware/validation');
+const authMiddleware = require('../middleware/authMiddleware');
 
-// Conversion routes with rate limiting and validation
-router.post('/test', conversionLimiter, handleTestConversion);
-router.post('/convert', conversionLimiter, authMiddleware.authenticateToken, validateFileUpload, handleConvert);
-router.get('/progress/:jobId', validateJobId, getProgress);
-router.post('/download', authMiddleware.authenticateToken, validateDownloadRequest, serveZipFile);
+router.get('/test', (req, res) => res.send('Conversion API is working!'));
+router.post('/convert-unified', authMiddleware.authenticateToken, conversionLimiter, validateUnifiedConvert, handleUnifiedConvert);
+router.get('/progress/:jobId', authMiddleware.authenticateToken, validateJobId, getProgress);
+router.get('/download', authMiddleware.authenticateToken, validateDownloadRequest, serveZipFile);
 
 module.exports = router;

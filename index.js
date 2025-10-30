@@ -33,19 +33,21 @@ app.use(generalLimiter);
 // Routes
 const uploadRoutes = require('./routes/uploads');
 const conversionRoutes = require('./routes/conversion');
+const idmcRoutes = require('./routes/idmc');
 const loginRoute = require('./routes/loginRoute');
 const websocketRoutes = require('./routes/websocket');
 
 // API End Points
 app.use('/api', uploadRoutes);
 app.use('/api', conversionRoutes);
+app.use('/api/idmc', idmcRoutes);
 app.use('/api/auth', loginRoute);
 app.use('/api/websocket', websocketRoutes);
 
 app.get('/', (req, res) => {
   res.json({ 
-    status: 'Oracle → Snowflake Migration Tool API Ready',
-    description: 'Oracle PL/SQL to Snowflake SQL/JavaScript Migration Utility using LLM-based conversion',
+    status: 'Oracle → Snowflake & IDMC Migration Tool API Ready',
+    description: 'Oracle PL/SQL to Snowflake SQL/JavaScript and IDMC Migration Utility using LLM-based conversion',
     endpoints: {
       // File Upload Routes
       upload: {
@@ -71,17 +73,24 @@ app.get('/', (req, res) => {
         url: '/api/test',
         description: 'Test Oracle → Snowflake migration using sample zip file'
       },
-      convert: {
+      convertUnified: {
         method: 'POST',
-        url: '/api/convert',
-        description: 'Convert Oracle PL/SQL files to Snowflake SQL/JavaScript',
-        body: { zipFilePath: '/path/to/your/oracle-files.zip' }
+        url: '/api/convert-unified',
+        description: 'Unified convert: inputType (zip|single), target (snowflake|idmc)',
+        body: { inputType: 'zip|single', target: 'snowflake|idmc', sourceType: 'oracle|redshift|auto', zipFilePath: '/abs/path.zip', sourceCode: '...', fileName: 'input.sql' }
       },
       progress: {
         method: 'GET',
         url: '/api/progress/:jobId',
         description: 'Get real-time progress status',
         note: 'Job ID format: convert_[filename]'
+      },
+      // IDMC Conversion Routes
+      idmcBatch: {
+        method: 'POST',
+        url: '/api/idmc/batch',
+        description: 'Unified batch processing: inputType zip|single',
+        body: { inputType: 'zip|single', zipFilePath: '/abs/path.zip', script: '...', fileName: 'run_script.bat', scriptType: 'oracle|redshift' }
       },
       // WebSocket Routes
       websocketStats: {
@@ -103,7 +112,8 @@ app.get('/', (req, res) => {
     },
     organization: {
       uploadRoutes: 'Handles Oracle file uploads and Snowflake conversion downloads',
-      conversionRoutes: 'Handles Oracle PL/SQL to Snowflake SQL/JavaScript conversion with progress tracking'
+      conversionRoutes: 'Handles Oracle PL/SQL to Snowflake SQL/JavaScript conversion with progress tracking',
+      idmcRoutes: 'Handles Oracle/Redshift to IDMC mapping summary conversions'
     }
   });
 });

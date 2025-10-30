@@ -10,6 +10,7 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const archiver = require('archiver');
 const { Worker } = require('worker_threads');
+const progressEmitter = require('../websocket/progressEmitter');
 
 // Helper function to get file size
 async function getFileSize(filePath) {
@@ -547,17 +548,35 @@ const handleTestConversion = async (req, res) => {
   }
 };
 
-// Convert API that takes a zip file path
+// Convert API that takes a zip file path or direct code
 const handleConvert = async (req, res) => {
   let extractedPath = null;
   let jobId = null;
   
   try {
-    const { zipFilePath } = req.body;
+    const { zipFilePath, sourceCode, fileName } = req.body;
+    
+    // Handle direct code input if provided
+    if (sourceCode) {
+      console.log(`🔄 Processing direct code conversion request`);
+      
+      // Use the file name provided or default to input.sql
+      const inputFileName = fileName || 'input.sql';
+      
+      // Convert the code directly
+      const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, inputFileName);
+      
+      return res.status(200).json({
+        success: true,
+        fileName: inputFileName,
+        conversionType: 'oracle-to-snowflake',
+        result: convertedCode
+      });
+    }
     
     if (!zipFilePath) {
       return res.status(400).json({ 
-        error: 'zipFilePath is required',
+        error: 'Either source code or zipFilePath is required',
         example: { zipFilePath: '/path/to/your/oracle-files.zip' }
       });
     }
@@ -570,9 +589,9 @@ const handleConvert = async (req, res) => {
       });
     }
     
-    // Create job ID based on filename
-    const fileName = path.basename(zipFilePath, path.extname(zipFilePath));
-    jobId = `convert_${fileName}`;
+    // Create job ID based on zip base name
+    const zipBaseName = path.basename(zipFilePath, path.extname(zipFilePath));
+    jobId = `convert_${zipBaseName}`;
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
@@ -853,9 +872,372 @@ const serveZipFile = async (req, res) => {
   }
 };
 
-module.exports = { 
+// Direct code conversion handler
+const handleDirectCodeConversion = async (req, res) => {
+  try {
+    const { sourceCode, fileName = 'input.sql', conversionType = 'oracle-to-snowflake' } = req.body;
+    console.log(`🔄 Processing direct code conversion request for type: ${conversionType}`);
+    
+    let convertedCode = '';
+    let mappingSummary = null;
+    
+    // Process based on conversion type
+    if (conversionType === 'oracle-to-snowflake') {
+      // Convert Oracle code to Snowflake
+      convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, fileName);
+    } else if (conversionType === 'oracle-to-idmc') {
+      // Convert Oracle code to IDMC mapping
+      const idmcService = require('../services/idmcConversionService');
+      mappingSummary = await idmcService.convertOracleCodeToIdmc(sourceCode, fileName);
+    } else if (conversionType === 'redshift-to-idmc') {
+      // Convert Redshift code to IDMC mapping
+      const idmcService = require('../services/idmcConversionService');
+      mappingSummary = await idmcService.convertRedshiftCodeToIdmc(sourceCode, fileName);
+    }
+    
+    // Return the converted code or mapping summary
+    return res.status(200).json({
+      success: true,
+      fileName,
+      conversionType,
+      result: conversionType.includes('idmc') ? mappingSummary : convertedCode
+    });
+  } catch (error) {
+    console.error('❌ Error in direct code conversion:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'An error occurred during code conversion'
+    });
+  }
+};
+
+// Helper: find SQL-like files for IDMC auto/redshift/oracle flows
+async function findSqlLikeFiles(directory) {
+  const files = [];
+  async function scanDir(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await scanDir(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if ([".sql", ".pls", ".pkg", ".prc", ".fnc", ".rs", ".redshift"].includes(ext)) {
+          files.push(fullPath);
+        }
+      }
+    }
+  }
+  await scanDir(directory);
+  return files;
+}
+
+// IDMC conversion using worker threads (for ZIP unified flow)
+async function convertIDMCFilesWithWorkers(extractedPath, files, jobId) {
+  const maxWorkers = Math.min(8, files.length || 0);
+  if (maxWorkers === 0) {
+    return { idmcFiles: [], convertedFiles: [] };
+  }
+
+  const workers = [];
+  const fileQueue = [...files];
+  const results = [];
+
+  const startNext = (worker) => {
+    if (fileQueue.length === 0) {
+      worker.terminate();
+      return;
+    }
+    const nextFile = fileQueue.shift();
+    worker.postMessage({ filePath: nextFile, extractedPath });
+  };
+
+  await new Promise((resolve, reject) => {
+    let active = 0;
+    for (let i = 0; i < maxWorkers; i++) {
+      const worker = new Worker(path.join(__dirname, '..', 'workers', 'idmcConversionWorker.js'));
+      workers.push(worker);
+      active++;
+
+      worker.on('message', (msg) => {
+        if (msg && msg.success) {
+          const r = msg.result;
+          results.push({ success: true, ...r });
+        } else {
+          results.push({ success: false, error: msg && msg.error ? msg.error : 'Unknown worker error' });
+        }
+
+        // Progress update: based on results length vs total files
+        const progress = Math.round((results.length / files.length) * 90);
+        progressService.updateProgress(jobId, 1, progress, `Converted ${results.length}/${files.length} files`);
+
+        if (fileQueue.length > 0) {
+          startNext(worker);
+        } else {
+          worker.terminate();
+          active--;
+          if (active === 0) resolve();
+        }
+      });
+
+      worker.on('error', (err) => {
+        results.push({ success: false, error: err.message });
+        if (fileQueue.length > 0) {
+          startNext(worker);
+        } else {
+          worker.terminate();
+          active--;
+          if (active === 0) resolve();
+        }
+      });
+
+      startNext(worker);
+    }
+  });
+
+  // Build outputs
+  const idmcFiles = [];
+  const convertedFiles = [];
+
+  // Write files to disk for zipping
+  const idmcOutRoot = process.env.IDMC_PATH || './idmc_output';
+  await fs.ensureDir(idmcOutRoot);
+
+  for (const r of results) {
+    if (r.success) {
+      const outPath = path.join(idmcOutRoot, r.converted);
+      await fs.ensureDir(path.dirname(outPath));
+      await fs.writeFile(outPath, r.idmcContent, 'utf8');
+      idmcFiles.push({ name: r.converted, content: r.idmcContent, fileType: r.detectedType });
+      convertedFiles.push({ original: r.original, converted: r.converted, idmcContent: r.idmcContent, detectedType: r.detectedType, success: true });
+    } else {
+      convertedFiles.push({ original: null, converted: null, idmcContent: null, detectedType: null, success: false, error: r.error });
+    }
+  }
+
+  // Keep deterministic order by filename
+  idmcFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  convertedFiles.sort((a, b) => (a.original || '').localeCompare(b.original || '', undefined, { numeric: true, sensitivity: 'base' }));
+
+  return { idmcFiles, convertedFiles };
+}
+
+// Heuristic: detect Oracle vs Redshift using both file name and content
+function detectSourceTypeFromNameAndContent(fileName, content, fallback = 'sql') {
+  try {
+    const name = (fileName || '').toLowerCase();
+    const upper = (content || '').toUpperCase();
+
+    // Strong filename hints
+    if (/(redshift|rs_\b|\brs_|_rs\b|\bredshift\b)/i.test(fileName || '')) return 'redshift';
+    if (/(oracle|plsql|pkg|pks|pkb)/i.test(fileName || '')) return 'oracle';
+
+    // Content-based indicators (combine Oracle + Redshift cues)
+    const oracleCues = (
+      upper.includes('VARCHAR2') ||
+      upper.includes('NUMBER') ||
+      upper.includes('SYSDATE') ||
+      upper.includes('DUAL') ||
+      upper.includes('NVL(') ||
+      upper.includes('DECODE(') ||
+      /\bROWNUM\b/.test(upper) ||
+      upper.includes('CREATE OR REPLACE')
+    );
+
+    const redshiftCues = (
+      (upper.includes('CREATE TABLE') && (upper.includes('DISTKEY') || upper.includes('SORTKEY'))) ||
+      upper.includes('COPY ') ||
+      upper.includes('UNLOAD ') ||
+      /\bSTL_\w+\b/.test(upper) ||
+      /\bSVL_\w+\b/.test(upper) ||
+      upper.includes('CHARACTER VARYING')
+    );
+
+    if (oracleCues && !redshiftCues) return 'oracle';
+    if (redshiftCues && !oracleCues) return 'redshift';
+    if (redshiftCues) return 'redshift';
+    if (oracleCues) return 'oracle';
+    return fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+// Unified convert handler: supports { inputType: 'zip'|'single', target: 'snowflake'|'idmc', sourceType?: 'oracle'|'redshift'|'auto' }
+const handleUnifiedConvert = async (req, res) => {
+  let extractedPath = null;
+  let jobId = null;
+  try {
+    const { inputType, target, sourceType = 'auto', zipFilePath, sourceCode, fileName, outputFormat = 'json' } = req.body;
+
+    // Single-file conversions
+    if (inputType === 'single') {
+      if (!sourceCode) {
+        return res.status(400).json({ error: 'sourceCode is required for single inputType' });
+      }
+
+      if (target === 'snowflake') {
+        const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, fileName || 'input.sql');
+        return res.status(200).json({ success: true, conversionType: 'oracle-to-snowflake', fileName: fileName || 'input.sql', result: convertedCode });
+      }
+
+      // IDMC single: auto-detect when sourceType not provided or set to auto
+      const idmcService = require('../services/idmcConversionService');
+      let idmcSummary;
+      const name = fileName || 'input.sql';
+      let resolvedType = sourceType;
+      if (!resolvedType || resolvedType === 'auto') {
+        resolvedType = detectSourceTypeFromNameAndContent(name, sourceCode, 'sql');
+        if (resolvedType === 'sql') {
+          // fallback to existing analyzer if inconclusive
+          resolvedType = idmcService.analyzeSqlContent(sourceCode) || 'sql';
+        }
+      }
+      if (resolvedType === 'redshift') {
+        idmcSummary = await idmcService.convertRedshiftToIDMC(sourceCode, name, 'sql');
+      } else {
+        idmcSummary = await idmcService.convertOracleToIDMC(sourceCode, name, 'sql');
+      }
+      return res.status(200).json({ success: true, conversionType: `${resolvedType}-to-idmc`, fileName: name, result: idmcSummary });
+    }
+
+    // ZIP conversions
+    if (!zipFilePath) {
+      return res.status(400).json({ error: 'zipFilePath is required for zip inputType', example: { zipFilePath: '/path/to/your/files.zip' } });
+    }
+    if (!await fs.pathExists(zipFilePath)) {
+      return res.status(404).json({ error: 'Zip file not found', providedPath: zipFilePath });
+    }
+
+    const baseName = path.basename(zipFilePath, path.extname(zipFilePath));
+    jobId = `unified_${target}_${baseName}`;
+    const job = progressService.createJob(jobId);
+    progressEmitter.emitJobCreated(jobId, job);
+    progressService.updateProgress(jobId, 0, 5, 'Initializing conversion...');
+    progressEmitter.emitStepUpdate(jobId, 0, 5, 'Initializing conversion...');
+
+    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
+    await fs.ensureDir(extractedPath);
+
+    // Extract
+    progressService.updateProgress(jobId, 0, 15, 'Extracting zip file...');
+    progressEmitter.emitStepUpdate(jobId, 0, 15, 'Extracting zip file...');
+    try {
+      await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
+    } catch (err) {
+      await new Promise((resolve, reject) => {
+        const extract = unzipper.Extract({ path: extractedPath });
+        extract.on('error', reject);
+        extract.on('close', () => setTimeout(resolve, 100));
+        fs.createReadStream(zipFilePath).pipe(extract);
+      });
+    }
+
+    if (target === 'snowflake') {
+      // Reuse existing Oracle->Snowflake flow
+      progressService.updateProgress(jobId, 0, 30, 'Analyzing project...');
+      progressEmitter.emitStepUpdate(jobId, 0, 30, 'Analyzing project...');
+      const analysis = await oracleFileAnalysisService.analyzeOracleProjectFromDirectory(extractedPath);
+      progressService.updateProgress(jobId, 1, 10, 'Converting to Snowflake...');
+      progressEmitter.emitStepUpdate(jobId, 1, 10, 'Converting to Snowflake...');
+      const conversionResult = await convertOracleFilesWithWorkers(extractedPath, analysis, jobId);
+      progressService.updateProgress(jobId, 2, 10, 'Packaging results...');
+      progressEmitter.emitStepUpdate(jobId, 2, 10, 'Packaging results...');
+
+      const zipsPath = process.env.ZIPS_PATH || './zips';
+      await fs.ensureDir(zipsPath);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const outZipName = `converted_oracle_snowflake_${timestamp}.zip`;
+      const outZipPath = path.join(zipsPath, outZipName);
+      await createSnowflakeZipFile(conversionResult.snowflakeFiles, outZipPath);
+      progressService.updateProgress(jobId, 2, 100, 'Completed');
+      progressEmitter.emitJobCompleted(jobId, { conversion: conversionResult, zipFilename: outZipName });
+
+      progressService.completeJob(jobId, { conversion: conversionResult, zipFilename: outZipName });
+      return res.status(200).json({ success: true, target, jobId, zipFilename: outZipName, conversion: conversionResult });
+    }
+
+    // IDMC (zip): use worker pool for per-file conversion
+    progressService.updateProgress(jobId, 1, 10, 'Scanning files...');
+    progressEmitter.emitStepUpdate(jobId, 1, 10, 'Scanning files...');
+    const allFiles = await findSqlLikeFiles(extractedPath);
+    const sorted = allFiles.sort((a, b) => path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true, sensitivity: 'base' }));
+    const total = sorted.length;
+    const { idmcFiles, convertedFiles } = await convertIDMCFilesWithWorkers(extractedPath, sorted, jobId);
+
+    // Optionally render DOCX/PDF variants of the IDMC summaries
+    const filesForZip = [];
+    const wantJson = outputFormat === 'json' || outputFormat === 'all';
+    const wantDocx = outputFormat === 'docx' || outputFormat === 'all';
+    const wantPdf = outputFormat === 'pdf' || outputFormat === 'all';
+
+    if (wantJson) {
+      filesForZip.push(...idmcFiles.map(f => ({ name: f.name, content: f.content })));
+    }
+
+    if (wantDocx || wantPdf) {
+      const documentService = require('../services/documentService');
+      for (const f of idmcFiles) {
+        if (wantDocx) {
+          const docxBuf = await documentService.markdownToDocxBuffer(f.content, f.name);
+          const docxName = f.name.replace(/_IDMC_Summary\.json$/i, '_IDMC_Summary.docx');
+          filesForZip.push({ name: docxName, content: docxBuf });
+        }
+        // PDF generation not implemented to avoid heavy deps; reserved for future
+      }
+    }
+
+    const zipsPath = process.env.ZIPS_PATH || './zips';
+    await fs.ensureDir(zipsPath);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const suffix = outputFormat === 'json' ? 'json' : (outputFormat === 'docx' ? 'docx' : (outputFormat === 'pdf' ? 'pdf' : 'all'));
+    const outZipName = `idmc_summaries_${suffix}_${timestamp}.zip`;
+    const outZipPath = path.join(zipsPath, outZipName);
+    await createSnowflakeZipFile(filesForZip, outZipPath); // same zip helper works with {name,content}
+    progressService.updateProgress(jobId, 2, 100, 'Completed');
+
+    // Cleanup IDMC output folder after packaging
+    try {
+      const idmcPath = process.env.IDMC_PATH || './idmc_output';
+      if (await fs.pathExists(idmcPath)) {
+        await fs.remove(idmcPath);
+      }
+    } catch (_) {
+      // ignore cleanup errors
+    }
+    progressEmitter.emitJobCompleted(jobId, { conversion: { totalConverted: convertedFiles.filter(f => f.success).length, totalFiles: total }, zipFilename: outZipName });
+
+    const result = {
+      conversion: {
+        totalConverted: convertedFiles.filter(f => f.success).length,
+        totalFiles: total,
+        successRate: total ? Math.round((convertedFiles.filter(f => f.success).length / total) * 100) : 0,
+        convertedFiles,
+        errors: convertedFiles.filter(f => !f.success)
+      },
+      zipFilename: outZipName
+    };
+    progressService.completeJob(jobId, result);
+    return res.status(200).json({ success: true, target, jobId, ...result });
+  } catch (error) {
+    if (jobId) {
+      progressService.failJob(jobId, error.message);
+      progressEmitter.emitJobFailed(jobId, error.message);
+    }
+    return res.status(500).json({ error: 'Unified conversion failed', details: error.message, jobId });
+  } finally {
+    if (extractedPath && await fs.pathExists(extractedPath)) {
+      await fs.remove(extractedPath);
+    }
+  }
+};
+
+module.exports = {
   handleTestConversion,
   handleConvert,
   getProgress,
-  serveZipFile
+  serveZipFile,
+  handleDirectCodeConversion,
+  handleUnifiedConvert
 };

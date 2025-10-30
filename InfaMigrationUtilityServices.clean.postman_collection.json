@@ -1,0 +1,151 @@
+{
+  "info": {
+    "_postman_id": "infa-migration-utility-services-clean",
+    "name": "InfaMigration Utility Services - Clean Collection",
+    "description": "Minimal, up-to-date collection for the unified APIs.\n\nGroups:\n- SQL to IDMC Summary (auto-detect Oracle/Redshift) — zip, single\n- Oracle SQL to Snowflake — zip, single\n- Batch Script to IDMC Summary (SQL extraction) — zip, single\n- Batch Script – Human Language Summary",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const res = pm.response.json();",
+                  "  if (res.token) { pm.collectionVariables.set('authToken', res.token); }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"yourpassword\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "SQL to IDMC Summary",
+      "item": [
+        {
+          "name": "ZIP → IDMC (auto-detect)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [ { "key": "token", "value": "{{authToken}}", "type": "string" } ]
+            },
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"zip\",\n  \"target\": \"idmc\",\n  \"sourceType\": \"auto\",\n  \"zipFilePath\": \"/absolute/path/to/sql-files.zip\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/convert-unified", "host": ["{{baseUrl}}"], "path": ["api","convert-unified"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Single → IDMC (oracle)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [ { "key": "token", "value": "{{authToken}}", "type": "string" } ]
+            },
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"single\",\n  \"target\": \"idmc\",\n  \"sourceType\": \"oracle\",\n  \"fileName\": \"oracle_single.sql\",\n  \"sourceCode\": \"SELECT c.customer_id, c.customer_name FROM customers c WHERE c.status = 'ACTIVE';\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/convert-unified", "host": ["{{baseUrl}}"], "path": ["api","convert-unified"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Oracle SQL to Snowflake",
+      "item": [
+        {
+          "name": "ZIP → Snowflake",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [ { "key": "token", "value": "{{authToken}}", "type": "string" } ]
+            },
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"zip\",\n  \"target\": \"snowflake\",\n  \"zipFilePath\": \"/absolute/path/to/oracle-files.zip\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/convert-unified", "host": ["{{baseUrl}}"], "path": ["api","convert-unified"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Single → Snowflake",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [ { "key": "token", "value": "{{authToken}}", "type": "string" } ]
+            },
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"single\",\n  \"target\": \"snowflake\",\n  \"fileName\": \"oracle_single.sql\",\n  \"sourceCode\": \"-- Use samples/sql/oracle_single.sql content here for a comprehensive test\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/convert-unified", "host": ["{{baseUrl}}"], "path": ["api","convert-unified"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Batch Script to IDMC Summary (SQL extraction)",
+      "item": [
+        {
+          "name": "ZIP Batch → IDMC",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"zip\",\n  \"zipFilePath\": \"/absolute/path/to/batch-scripts.zip\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/idmc/batch", "host": ["{{baseUrl}}"], "path": ["api","idmc","batch"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Single Batch Script → IDMC",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"inputType\": \"single\",\n  \"script\": \"sqlplus user/pass@db @script.sql\\nEXIT\",\n  \"fileName\": \"run_oracle.bat\",\n  \"scriptType\": \"oracle\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/idmc/batch", "host": ["{{baseUrl}}"], "path": ["api","idmc","batch"] }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Batch Script – Human Language",
+      "item": [
+        {
+          "name": "Summarize Batch Script",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"script\": \"@echo off\\r\\nSET LOGFILE=C:\\\\logs\\\\TM_Snapshot.log\\r\\nSET DATAFILE=C:\\\\data\\\\%1%\\r\\nsqlplus -L user/pass@DB @post_load.sql\\r\\nEXIT\",\n  \"fileName\": \"LoadTMSnapshot.bat\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/idmc/batch-summary", "host": ["{{baseUrl}}"], "path": ["api","idmc","batch-summary"] }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3001", "type": "string" },
+    { "key": "authToken", "value": "", "type": "string" }
+  ]
+}
+
+

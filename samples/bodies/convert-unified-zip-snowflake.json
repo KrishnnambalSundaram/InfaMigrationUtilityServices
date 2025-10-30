@@ -1,0 +1,6 @@
+{
+  "inputType": "zip",
+  "target": "snowflake",
+  "zipFilePath": "/absolute/path/to/oracle-files.zip"
+}
+

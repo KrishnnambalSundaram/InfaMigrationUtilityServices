@@ -748,6 +748,25 @@ $$;
       throw error;
     }
   }
-}
 
+  // Method to convert direct Oracle code input to Snowflake
+  async convertOracleCodeToSnowflake(sourceCode, fileName) {
+    try {
+      console.log(`🔄 Converting direct Oracle code input to Snowflake for ${fileName}`);
+      
+      // Determine file type from fileName
+      const fileType = path.extname(fileName).replace('.', '') || 'sql';
+      
+      // Use the existing conversion method
+      const convertedCode = await this.convertOracleToSnowflake(sourceCode, fileName, fileType);
+      
+      return convertedCode;
+    } catch (error) {
+      console.error('❌ Error converting direct Oracle code:', error);
+      throw new Error(`Failed to convert Oracle code: ${error.message}`);
+    }
+  }
+
+
+}
 module.exports = new OracleConversionService();

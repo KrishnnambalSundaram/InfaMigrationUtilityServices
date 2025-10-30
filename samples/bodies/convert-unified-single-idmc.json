@@ -1,0 +1,8 @@
+{
+  "inputType": "single",
+  "target": "idmc",
+  "sourceType": "oracle",
+  "fileName": "oracle_single.sql",
+  "sourceCode": "SELECT c.id, c.name FROM customers c WHERE c.status = 'ACTIVE';"
+}
+

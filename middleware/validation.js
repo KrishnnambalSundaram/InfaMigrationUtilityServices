@@ -39,6 +39,39 @@ const validateFileUpload = [
     .matches(/\.zip$/i)
     .withMessage('File must be a ZIP file'),
   
+  body('sourceCode')
+    .optional()
+    .isString()
+    .withMessage('Source code must be a string'),
+    
+  body('fileName')
+    .optional()
+    .isString()
+    .withMessage('File name must be a string'),
+  
+  handleValidationErrors
+];
+
+// Direct code input validation
+const validateDirectCodeInput = [
+  body('sourceCode')
+    .notEmpty()
+    .withMessage('Source code is required')
+    .isString()
+    .withMessage('Source code must be a string'),
+  
+  body('fileName')
+    .optional()
+    .isString()
+    .withMessage('File name must be a string'),
+  
+  body('conversionType')
+    .optional()
+    .isString()
+    .withMessage('Conversion type must be a string')
+    .isIn(['oracle-to-snowflake', 'oracle-to-idmc', 'redshift-to-idmc'])
+    .withMessage('Invalid conversion type'),
+  
   handleValidationErrors
 ];
 
@@ -65,6 +98,83 @@ const validateDownloadRequest = [
     .isLength({ min: 1, max: 255 })
     .withMessage('Filename must be between 1 and 255 characters'),
   
+  handleValidationErrors
+];
+
+// Unified convert validation
+const validateUnifiedConvert = [
+  body('inputType')
+    .isString()
+    .withMessage('inputType is required')
+    .isIn(['zip', 'single'])
+    .withMessage('inputType must be one of: zip, single'),
+
+  body('target')
+    .isString()
+    .withMessage('target is required')
+    .isIn(['snowflake', 'idmc'])
+    .withMessage('target must be one of: snowflake, idmc'),
+
+  body('sourceType')
+    .optional()
+    .isIn(['oracle', 'redshift', 'auto'])
+    .withMessage('sourceType must be one of: oracle, redshift, auto'),
+
+  body('zipFilePath')
+    .optional()
+    .isString()
+    .withMessage('zipFilePath must be a string')
+    .matches(/\.zip$/i)
+    .withMessage('zipFilePath must point to a ZIP file'),
+
+  body('sourceCode')
+    .optional()
+    .isString()
+    .withMessage('sourceCode must be a string'),
+
+  body('fileName')
+    .optional()
+    .isString()
+    .withMessage('fileName must be a string'),
+
+  body('outputFormat')
+    .optional()
+    .isIn(['json', 'docx', 'pdf', 'all'])
+    .withMessage('outputFormat must be one of: json, docx, pdf, all'),
+
+  handleValidationErrors
+];
+
+// Unified batch processing validation
+const validateUnifiedBatch = [
+  body('inputType')
+    .isString()
+    .withMessage('inputType is required')
+    .isIn(['zip', 'single'])
+    .withMessage('inputType must be one of: zip, single'),
+
+  body('zipFilePath')
+    .optional()
+    .isString()
+    .withMessage('zipFilePath must be a string')
+    .matches(/\.zip$/i)
+    .withMessage('zipFilePath must point to a ZIP file'),
+
+  body('script')
+    .optional()
+    .isString()
+    .withMessage('script must be a string'),
+
+  body('fileName')
+    .optional()
+    .isString()
+    .withMessage('fileName must be a string'),
+
+  body('scriptType')
+    .optional()
+    .isIn(['oracle', 'redshift'])
+    .withMessage('scriptType must be one of: oracle, redshift'),
+
   handleValidationErrors
 ];
 
@@ -132,6 +242,9 @@ const sanitizeInput = (req, res, next) => {
 module.exports = {
   validateUserLogin,
   validateFileUpload,
+  validateDirectCodeInput,
+  validateUnifiedConvert,
+  validateUnifiedBatch,
   validateJobId,
   validateDownloadRequest,
   validateWebSocketNotification,

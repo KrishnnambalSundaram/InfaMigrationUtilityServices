@@ -1,0 +1,7 @@
+{
+  "inputType": "single",
+  "target": "snowflake",
+  "fileName": "oracle_single.sql",
+  "sourceCode": "CREATE OR REPLACE PROCEDURE get_customer_total(p_customer_id IN NUMBER) AS\n  v_total NUMBER;\nBEGIN\n  SELECT SUM(amount) INTO v_total FROM orders WHERE customer_id = p_customer_id;\nEND;\n/"
+}
+
