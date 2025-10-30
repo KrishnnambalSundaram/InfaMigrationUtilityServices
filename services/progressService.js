@@ -65,10 +65,9 @@ class ProgressService {
       progress: 0,
       currentStep: '',
       steps: [
-        { name: 'Analyzing .NET project', progress: 0 },
-        { name: 'Converting C# to Java', progress: 0 },
-        { name: 'Generating Quarkus project', progress: 0 },
-        { name: 'Creating final package', progress: 0 }
+        { name: 'Extracting and analyzing source files', progress: 0 },
+        { name: 'Converting to target format (Snowflake/IDMC)', progress: 0 },
+        { name: 'Packaging conversion results', progress: 0 }
       ],
       result: null,
       error: null,

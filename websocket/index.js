@@ -14,6 +14,7 @@ module.exports = {
   emitFileConversionProgress: (jobId, convertedCount, totalFiles, elapsedTime, estimatedTime) => 
     progressEmitter.emitFileConversionProgress(jobId, convertedCount, totalFiles, elapsedTime, estimatedTime),
   emitSystemNotification: (message, type) => progressEmitter.emitSystemNotification(message, type),
+  setJobContext: (jobId, context) => progressEmitter.setJobContext(jobId, context),
   
   // New methods for broadcasting to all clients
   emitProgressUpdateToAll: (data) => socketService.emitProgressUpdateToAll(data),

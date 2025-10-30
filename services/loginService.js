@@ -3,15 +3,15 @@ const {generateToken} = require("../utils/jwtUtils");
 async function login(email, password) {
     try {
         // Hardcoded admin credentials
-        const ADMIN_EMAIL = "admin@admin.com";
+        const ADMIN_EMAILS = ["admin@admin.com", "admin@axxeltechnologies.com"];
         const ADMIN_PASSWORD = "Admin@123";
         
         // Check if credentials match admin
-        if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
+        if (ADMIN_EMAILS.includes(email) && password === ADMIN_PASSWORD) {
             // Create admin user object
             const adminUser = {
                 _id: "admin_user_id",
-                email: ADMIN_EMAIL,
+                email: email,
                 firstName: "Admin",
                 lastName: "User",
                 role: "admin"

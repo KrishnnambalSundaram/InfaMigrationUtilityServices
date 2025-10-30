@@ -79,15 +79,15 @@ class SocketService {
     });
   }
 
-  // Emit progress update to specific job room
+  // Emit progress update to all connected clients (no room join required)
   emitProgressUpdate(jobId, data) {
     if (this.io) {
-      this.io.to(jobId).emit('progress-update', {
+      this.io.emit('progress-update', {
         jobId,
         timestamp: new Date().toISOString(),
         ...data
       });
-      console.log(`📡 Emitted progress update for job: ${jobId} (${data.progress}%)`);
+      console.log(`📡 Emitted progress update (broadcast) for job: ${jobId} (${data.progress}%)`);
     }
   }
 

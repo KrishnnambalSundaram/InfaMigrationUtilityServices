@@ -27,8 +27,8 @@ app.use(express.json());
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Rate limiting
-app.use(generalLimiter);
+// Rate limiting (scope to API routes to avoid interfering with Socket.IO at /socket.io)
+app.use('/api', generalLimiter);
 
 // Routes
 const uploadRoutes = require('./routes/uploads');
@@ -40,6 +40,8 @@ const websocketRoutes = require('./routes/websocket');
 // API End Points
 app.use('/api', uploadRoutes);
 app.use('/api', conversionRoutes);
+  // Backward-compatible mount to support README path `/api/conversion/*`
+  app.use('/api/conversion', conversionRoutes);
 app.use('/api/idmc', idmcRoutes);
 app.use('/api/auth', loginRoute);
 app.use('/api/websocket', websocketRoutes);

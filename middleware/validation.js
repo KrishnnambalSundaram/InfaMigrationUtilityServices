@@ -87,17 +87,32 @@ const validateJobId = [
   handleValidationErrors
 ];
 
-// Download request validation
+// Download request validation: allow either filename (zip) OR filePath under allowed roots
 const validateDownloadRequest = [
-  body('filename')
-    .isString()
-    .notEmpty()
-    .withMessage('Filename is required')
-    .matches(/\.zip$/i)
-    .withMessage('File must be a ZIP file')
-    .isLength({ min: 1, max: 255 })
-    .withMessage('Filename must be between 1 and 255 characters'),
-  
+  body().custom((value, { req }) => {
+    const { filename, filePath } = req.method === 'GET' ? req.query : req.body;
+    if (!filename && !filePath) {
+      throw new Error('Either filename or filePath is required');
+    }
+    if (filename) {
+      if (typeof filename !== 'string' || !filename.match(/\.zip$/i)) {
+        throw new Error('When provided, filename must be a .zip file');
+      }
+      if (filename.length < 1 || filename.length > 255) {
+        throw new Error('Filename must be between 1 and 255 characters');
+      }
+    }
+    if (filePath) {
+      if (typeof filePath !== 'string') {
+        throw new Error('filePath must be a string');
+      }
+    }
+    // Normalize for controller usage
+    if (req.method === 'GET') {
+      req.body = { filename, filePath };
+    }
+    return true;
+  }),
   handleValidationErrors
 ];
 

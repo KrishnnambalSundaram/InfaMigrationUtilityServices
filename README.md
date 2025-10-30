@@ -1,303 +1,236 @@
-## Oracle → Snowflake/IDMC Migration Utility
+## Infa Migration Utility Services - API Guide
 
-This utility converts Oracle PL/SQL (and Redshift SQL) into target outputs (Snowflake SQL/JS or IDMC Mapping Summaries). It supports converting a single script or a ZIP archive of scripts, progress tracking, and packaging outputs as ZIP. For IDMC, you can export JSON and DOCX.
+This service converts Oracle PL/SQL and Redshift SQL into Snowflake code or IDMC mapping summaries, and processes Batch scripts into IDMC-style summaries or human-readable summaries. It also provides real-time progress via WebSockets.
 
-### Contents
+### Base URL
 
-- Quick Start
-- Authentication
-- Unified Conversion API (ZIP/Single)
-- Progress API
-- Download API
-- Batch Script APIs
-- WebSocket Progress
-- Configuration
-- Errors
-- Examples
-- Integration Tips
-
-### Quick Start
-
-1. Install dependencies:
-
-```
-npm install
-```
-
-2. Configure env vars (see Configuration).
-3. Run the server:
-
-```
-npm run dev
-```
+- Local dev: `http://localhost:3001`
 
 ### Authentication
 
-Most routes require JWT. Obtain a token via the login route and send:
+- Most routes require JWT: `Authorization: Bearer <JWT_TOKEN>`
 
-```
-Authorization: Bearer <JWT_TOKEN>
-```
+## Endpoints
 
-### Unified Conversion API
-
-Base: `/api/conversion`
+### 1) Unified Conversion (Oracle/Redshift → Snowflake or IDMC)
 
 POST `/api/conversion/convert-unified`
 
-- Converts to Snowflake or IDMC.
-- Supports single script or ZIP.
+Request (single):
 
-Supported targets and formats:
-
-- Targets: `snowflake`, `idmc`
-- Output formats (IDMC only): `json`, `docx`, `pdf` (reserved), `all`
-
-Request body (JSON):
-
-```
+```json
 {
-  "inputType": "zip" | "single",
+  "inputType": "single",
   "target": "snowflake" | "idmc",
-  "sourceType": "oracle" | "redshift" | "auto" (optional; default auto),
-
-  // inputType = zip
-  "zipFilePath": "/absolute/path/to/archive.zip",
-
-  // inputType = single
-  "sourceCode": "SELECT ...",
-  "fileName": "script.sql",
-
-  // IDMC only
-  "outputFormat": "json" | "docx" | "pdf" | "all" (default json)
+  "sourceType": "oracle" | "redshift" | "auto",
+  "fileName": "input.sql",
+  "sourceCode": "SELECT 1;",
+  "outputFormat": "sql|json|docx|all" // for snowflake; for idmc: "json|docx|sql|all"
 }
 ```
 
-Notes on `outputFormat` (IDMC target):
+Request (zip):
 
-- `json`: outputs `*_IDMC_Summary.json`.
-- `docx`: outputs `*_IDMC_Summary.docx`.
-- `all`: both JSON and DOCX.
-- `pdf`: reserved for future (not generated yet).
-
-Responses:
-
-- Snowflake (zip input):
-
+```json
+{
+  "inputType": "zip",
+  "target": "snowflake" | "idmc",
+  "sourceType": "oracle" | "redshift" | "auto",
+  "zipFilePath": "/absolute/path/to/archive.zip",
+  "outputFormat": "sql|json|docx|all" // snowflake; or "json|docx|sql|all" for idmc
+}
 ```
+
+Sample response (single → Snowflake):
+
+```json
 {
   "success": true,
-  "target": "snowflake",
-  "jobId": "unified_snowflake_<zipBase>",
-  "zipFilename": "converted_oracle_snowflake_<timestamp>.zip",
-  "conversion": { "totalConverted": n, "totalFiles": n, "successRate": n, "convertedFiles": [...], "errors": [] }
+  "conversionType": "oracle-to-snowflake",
+  "fileName": "input.sql",
+  "originalContent": "SELECT 1;",
+  "convertedContent": "CREATE OR REPLACE ...",
+  "outputFiles": [
+    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.sql", "path": "/abs/output/input_snowflake_....sql", "mime": "text/sql", "kind": "single" },
+    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.json", "path": "/abs/output/input_snowflake_....json", "mime": "application/json", "kind": "single" },
+    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.docx", "path": "/abs/output/input_snowflake_....docx", "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "kind": "single" }
+  ]
 }
 ```
 
-- IDMC (zip input):
+Sample response (zip → IDMC):
 
-```
+```json
 {
   "success": true,
   "target": "idmc",
   "jobId": "unified_idmc_<zipBase>",
-  "zipFilename": "idmc_summaries_<format>_<timestamp>.zip",
-  "conversion": { "totalConverted": n, "totalFiles": n, "successRate": n, "convertedFiles": [...], "errors": [] }
+  "zipFilename": "idmc_summaries_json_2025-10-30T09-00-00-000Z.zip",
+  "zipFilePath": "/abs/zips/idmc_summaries_json_....zip",
+  "jsonContent": null,
+  "conversion": {
+    "totalConverted": 15,
+    "totalFiles": 15,
+    "successRate": 100,
+    "convertedFiles": [
+      {
+        "original": "01_customer.sql",
+        "converted": "01_customer_IDMC_Summary.json",
+        "oracleContent": "...",
+        "idmcContent": "## 🧩 IDMC Mapping Summary...",
+        "detectedType": "oracle",
+        "success": true
+      }
+    ],
+    "errors": []
+  }
 }
 ```
 
-- Single input (IDMC or Snowflake):
+Output formats:
 
-```
-{
-  "success": true,
-  "conversionType": "oracle-to-snowflake" | "<source>-to-idmc",
-  "fileName": "input.sql",
-  "result": "<converted code or IDMC markdown>"
-}
-```
+- Snowflake: `sql` (default), `json`, `docx`, `all`
+- IDMC: `json` (default), `docx`, `sql` (original input saved), `all`
 
-### Progress API
+### 2) Progress API
 
 GET `/api/conversion/progress/:jobId`
-Returns progress and status.
 
-```
-{
-  "success": true,
-  "job": { "jobId": "...", "steps": [...], "status": "completed|failed|...", "result": { ... }, "error": "..." }
-}
+Response:
+
+```json
+{ "success": true, "job": { "jobId": "...", "status": "pending|completed|failed", "result": {"zipFilename":"..."}, "error": null } }
 ```
 
-### Download API
+### 3) Download API
 
 POST `/api/conversion/download`
-Body:
 
+Request (by filename):
+
+```json
+{ "filename": "converted_oracle_snowflake_sql_2025-10-30T09-00-00-000Z.zip" }
 ```
-{ "filename": "<zip returned by convert-unified>" }
+
+Request (by absolute path under allowed outputs):
+
+```json
+{ "filePath": "/absolute/path/under/zips-or-output-or-idmc/any.ext" }
 ```
 
-Returns: ZIP stream.
+### 4) Batch Script → IDMC Summaries
 
-### Batch Script APIs
+ZIP: POST `/api/idmc/batch`
 
-Base: `/api/idmc`
-
-POST `/api/idmc/batch`
-
-```
+```json
 {
-  "inputType": "zip" | "single",
-  "zipFilePath": "/absolute/path/to/zip.zip",
-  "script": "echo hello",          // when single
-  "fileName": "run.sh|run.bat",
-  "scriptType": "oracle|redshift"   // optional
+  "inputType": "zip",
+  "zipFilePath": "/absolute/path/to/batch.zip",
+  "outputFormat": "md" | "txt" // default md
 }
 ```
+
+SINGLE: POST `/api/idmc/batch` (single)
+
+```json
+{
+  "inputType": "single",
+  "script": "sqlplus ...",
+  "fileName": "run.bat",
+  "scriptType": "oracle|redshift",
+  "outputFormat": "md" | "txt"
+}
+```
+
+Response (single):
+
+```json
+{
+  "success": true,
+  "message": "Batch script processed successfully",
+  "fileName": "run.bat",
+  "scriptType": "oracle",
+  "originalContent": "...",
+  "extractionResult": { "totalStatements": 2, "statements": [ {"type":"SELECT","statement":"..."} ] },
+  "idmcSummaries": [ { "fileName": "run.bat_statement_1_IDMC_Summary.md", "idmcSummary": "## 🧩 IDMC Mapping Summary ..." } ],
+  "jsonContent": "### Statement 1\n\n## 🧩 IDMC Mapping Summary ...",
+  "outputFiles": [ { "name": "run.bat_statement_1_IDMC_Summary_...md", "path": "/abs/output/...md", "mime": "text/markdown" } ]
+}
+```
+
+Response (zip):
+
+```json
+{
+  "success": true,
+  "message": "Batch script processing completed successfully",
+  "source": "/abs/path/batch.zip",
+  "jobId": "batch_scripts_<zipBase>",
+  "jsonContent": "{\n  \"totalFiles\": ...\n}",
+  "processing": {
+    "totalFiles": 4,
+    "processedFiles": 4,
+    "failedFiles": 0,
+    "successRate": 100,
+    "results": [ { "fileName": "LoadTMSnapshot.bat", "scriptType": "oracle", "success": true, "extractionResult": { "totalStatements": 1 } } ]
+  },
+  "zipFilename": "batch_scripts_idmc_summaries_md_2025-10-30T09-00-00-000Z.zip",
+  "zipFilePath": "/abs/zips/batch_scripts_idmc_summaries_md_...zip"
+}
+```
+
+Output formats (Batch → IDMC): `md` (default) or `txt`
+
+### 5) Batch Script → Human Language Summary
 
 POST `/api/idmc/batch-summary`
 
+```json
+{
+  "script": "@echo off ...",
+  "fileName": "run.bat",
+  "outputFormat": "md" | "txt" // default md
+}
 ```
-{ "script": "echo hello", "fileName": "run.sh" }
+
+Response:
+
+```json
+{
+  "success": true,
+  "fileName": "run.bat",
+  "originalContent": "@echo off ...",
+  "summary": "## 🔹 Batch File Summary\n\n### 1. Source File ...",
+  "jsonContent": "## 🔹 Batch File Summary\n\n### 1. Source File ...",
+  "outputFiles": [ { "name": "run_Summary_...md", "path": "/abs/output/run_Summary_...md", "mime": "text/markdown" } ]
+}
 ```
 
-Usage guide (Batch conversion):
+### 6) WebSocket Progress
 
-- ZIP input:
-  1. Place your `.sh`/`.bat` scripts in a ZIP.
-  2. Call `POST /api/idmc/batch` with `{ inputType: "zip", zipFilePath: "/abs/path.zip" }`.
-  3. Poll progress if applicable; download packaged results if returned by your flow.
-- Single input:
-  1. Call `POST /api/idmc/batch` with `{ inputType: "single", script: "...", fileName: "run.sh" }`.
-  2. Receive a JSON response containing the processed result/summary.
-
-### WebSocket Progress
-
-Socket.IO is included for real-time updates. See `public/websocket-test.html` and `websocket/` for integration patterns.
-
-ZIP conversions (Snowflake and IDMC) emit WebSocket progress:
-
-- On job creation (status=created), then on each step (initializing, extracting, scanning/converting, packaging), and on completion/failure.
-- Join the `jobId` room to receive events only for that job.
+- Socket.IO served at `/socket.io`. See `public/progress-listener.html`.
+- Events: `connection-established`, `progress-update`, `system-notification`, `job-statistics`.
 
 Client example:
 
-```
+```html
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io(location.origin);
-  const jobId = 'unified_idmc_<your-zip-base>'; // from convert-unified response
-  socket.emit('join-job', jobId);
-  socket.on('progress-update', (p) => {
-    if (p.jobId !== jobId) return;
-    console.log(p.status, p.progress, p.currentStep);
-    if (p.status === 'completed') {
-      console.log('ZIP ready:', p.result?.zipFilename || p.zipFilename);
-    }
-  });
+  socket.on('progress-update', (p) => console.log(p));
 </script>
 ```
 
-### Configuration
+## Output File Types Summary
 
-Set via environment variables:
+- Snowflake: `.sql`, `.json`, `.docx`
+- IDMC (from SQL): `.json` (markdown string stored), `.docx`, original `.sql` if requested
+- Batch → IDMC: `.md` or `.txt`
+- Batch → Human Summary: `.md` or `.txt`
 
-```
-PORT=3000
-OPENAI_API_KEY=<key>
-UPLOAD_PATH=./uploads
-ZIPS_PATH=./zips
-IDMC_PATH=./idmc_output
-CONVERTED_PATH=./converted
-JWT_SECRET=<secret>
-```
+## Notes
 
-### Errors
+- Downloads are served only from allowed output roots: `ZIPS_PATH`, `OUTPUT_PATH`, `IDMC_PATH`.
+- For security, provide absolute paths under those roots when using the download API.
 
-Validation errors: 400 with details. Runtime: 500. Failed jobs are visible via Progress API.
 
-### Examples
-
-Convert ZIP → IDMC (DOCX):
-
-```
-curl -X POST http://localhost:3000/api/conversion/convert-unified \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{
-    "inputType": "zip",
-    "target": "idmc",
-    "sourceType": "auto",
-    "zipFilePath": "/Users/me/sample-oracle-files.zip",
-    "outputFormat": "docx"
-  }'
-```
-
-Convert ZIP → Snowflake:
-
-```
-curl -X POST http://localhost:3000/api/conversion/convert-unified \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{ "inputType": "zip", "target": "snowflake", "zipFilePath": "/Users/me/sample-oracle-files.zip" }'
-```
-
-Single → IDMC:
-
-```
-curl -X POST http://localhost:3000/api/conversion/convert-unified \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{
-    "inputType": "single",
-    "target": "idmc",
-    "sourceType": "auto",
-    "fileName": "query.sql",
-    "sourceCode": "SELECT 1;",
-    "outputFormat": "json"
-  }'
-```
-
-Poll progress:
-
-```
-curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:3000/api/conversion/progress/unified_idmc_sample-oracle-files
-```
-
-Download ZIP:
-
-```
-curl -X POST http://localhost:3000/api/conversion/download \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"filename":"idmc_summaries_docx_2025-10-30T07-49-49-482Z.zip"}' \
-  --output idmc_summaries_docx.zip
-```
-
-### How to use the APIs (step-by-step)
-
-IDMC or Snowflake conversion (ZIP):
-
-1. Ensure your ZIP contains SQL/PLSQL files and is accessible by path.
-2. Call `POST /api/conversion/convert-unified` with `{ inputType: "zip", target: "idmc"|"snowflake", zipFilePath: "...", outputFormat: "docx|json|all" }` (format for IDMC only).
-3. Save `jobId` and `zipFilename` from the response.
-4. Optionally poll `GET /api/conversion/progress/:jobId` until `status` is `completed`.
-5. Download with `POST /api/conversion/download { filename: zipFilename }`.
-
-IDMC or Snowflake conversion (single):
-
-1. Provide your SQL text and a `fileName`.
-2. Call `POST /api/conversion/convert-unified` with `{ inputType: "single", target: "idmc"|"snowflake", sourceCode: "...", fileName: "...", outputFormat: "json|docx|all" }`.
-3. Receive the converted content directly in `result` (no ZIP for single).
-
-Batch script conversion:
-
-1. For ZIP: `POST /api/idmc/batch` with `{ inputType: "zip", zipFilePath: "..." }`.
-2. For single: `POST /api/idmc/batch` with `{ inputType: "single", script: "...", fileName: "run.sh" }`.
-3. For quick summaries of a single script: `POST /api/idmc/batch-summary`.
-
-### Integration Tips
-
-- Capture `jobId` from `convert-unified` to poll `/progress/:jobId`.
-- UI flow: Upload ZIP → call convert → poll → enable download of `zipFilename`.
-- For readable handouts, set IDMC `outputFormat` to `docx` or `all`.
-- Optionally use WebSocket for real-time progress.
-- Surface validation and runtime errors clearly to users.

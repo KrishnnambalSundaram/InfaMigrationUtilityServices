@@ -333,7 +333,7 @@ class BatchScriptService {
       
       // Extract SQL statements
       const extractionResult = await this.extractSQLFromBatchScript(content, detectedScriptType);
-      
+
       // Convert each SQL statement to IDMC summary
       const idmcSummaries = [];
       for (let i = 0; i < extractionResult.statements.length; i++) {
@@ -377,6 +377,19 @@ class BatchScriptService {
         }
       }
       
+      // Fallback: If no SQL statements were found, still produce a high-level IDMC-style summary
+      if (extractionResult.totalStatements === 0) {
+        console.log('No SQL detected in batch script; generating orchestration-level IDMC summary');
+        const md = this.summarizeBatchScriptContent(content, fileName);
+        idmcSummaries.push({
+          statement: null,
+          type: 'BATCH_FLOW',
+          lineNumber: null,
+          idmcSummary: md,
+          fileName: `${fileName}_IDMC_Summary.md`
+        });
+      }
+
       return {
         fileName: fileName,
         scriptType: detectedScriptType,

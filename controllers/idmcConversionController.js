@@ -289,11 +289,28 @@ const handleConvertOracleToIDMC = async (req, res) => {
       // Convert the code directly
       const idmcSummary = await idmcConversionService.convertOracleCodeToIdmc(sourceCode, inputFileName);
       
+      // Persist artifacts based on requested outputFormat (supports 'sql' to save original)
+      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      await fs.ensureDir(outputsRoot);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = inputFileName.replace(/\.[^.]+$/g, '');
+      const { outputFormat = 'json' } = req.body || {};
+      const outputFiles = [];
+      if (outputFormat === 'sql' || outputFormat === 'all') {
+        const sqlName = `${base}_original_${timestamp}.sql`;
+        const sqlPath = require('path').join(outputsRoot, sqlName);
+        await fs.writeFile(sqlPath, sourceCode, 'utf8');
+        outputFiles.push({ name: sqlName, path: require('path').resolve(sqlPath), mime: 'text/sql', kind: 'single' });
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Oracle code converted to IDMC successfully',
         fileName: inputFileName,
-        idmcSummary: idmcSummary
+        originalContent: sourceCode,
+        idmcSummary: idmcSummary,
+        convertedContent: idmcSummary,
+        outputFiles
       });
     }
     
@@ -428,11 +445,27 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       // Convert the code directly
       const idmcSummary = await idmcConversionService.convertRedshiftCodeToIdmc(sourceCode, inputFileName);
       
+      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      await fs.ensureDir(outputsRoot);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = inputFileName.replace(/\.[^.]+$/g, '');
+      const { outputFormat = 'json' } = req.body || {};
+      const outputFiles = [];
+      if (outputFormat === 'sql' || outputFormat === 'all') {
+        const sqlName = `${base}_original_${timestamp}.sql`;
+        const sqlPath = require('path').join(outputsRoot, sqlName);
+        await fs.writeFile(sqlPath, sourceCode, 'utf8');
+        outputFiles.push({ name: sqlName, path: require('path').resolve(sqlPath), mime: 'text/sql', kind: 'single' });
+      }
+
       return res.status(200).json({
         success: true,
         message: 'Redshift code converted to IDMC successfully',
         fileName: inputFileName,
-        idmcSummary: idmcSummary
+        originalContent: sourceCode,
+        idmcSummary: idmcSummary,
+        convertedContent: idmcSummary,
+        outputFiles
       });
     }
     
@@ -590,7 +623,9 @@ const handleConvertSingleScriptToIDMC = async (req, res) => {
       message: 'Script converted to IDMC summary successfully',
       fileName: fileName,
       scriptType: detected || 'sql',
+      originalContent: script,
       idmcSummary: idmcSummary, // Return markdown directly
+      convertedContent: idmcSummary,
       jobId: jobId
     };
     

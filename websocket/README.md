@@ -1,373 +1,236 @@
-# WebSocket Module
+## WebSocket (Socket.IO) Progress Updates
 
-This module provides real-time WebSocket functionality for the Migration Tool, enabling live progress updates and client communication.
+This document explains how to connect to the WebSocket server, listen for real-time progress updates, and emit or test events used by the migration tool.
 
-## Structure
+### Overview
 
+- The server uses Socket.IO to broadcast job progress and system notifications to all connected clients.
+- Clients receive events like `connection-established`, `progress-update`, `system-notification`, and `job-statistics`.
+- Optional room-based subscription (`join-job`/`leave-job`) is supported, but current progress broadcasts go to all clients.
+
+### Server Initialization
+
+Socket.IO is initialized in `index.js` and mounted on the same HTTP server as Express.
+
+```12:21:/Users/viswajithka/Documents/GitHub/InfaMigrationUtilityServices/websocket/socketService.js
+initialize(server) {
+  this.io = new Server(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+  });
+  this.setupEventHandlers();
+  console.log('🔌 Socket.IO service initialized');
+  return this.io;
+}
 ```
-websocket/
-├── index.js           # Main module exports
-├── socketService.js   # Core Socket.IO service
-├── progressEmitter.js # Progress update emitter
-└── README.md         # This file
-```
 
-## Features
-
-### 🔌 Socket Service (`socketService.js`)
-
-- Manages Socket.IO server initialization
-- Handles client connections and disconnections
-- Room management for job-specific updates
-- Client tracking and statistics
-
-### 📡 Progress Emitter (`progressEmitter.js`)
-
-- Emits job creation events
-- Sends real-time progress updates
-- Handles job completion and failure events
-- File conversion progress tracking
-- System notifications
-
-### 📊 API Endpoints
-
-- `GET /api/websocket/stats` - Get connection statistics
-- `GET /api/websocket/test` - Test WebSocket functionality
-- `POST /api/websocket/notify` - Send notifications to clients
-- `GET /api/websocket/room/:roomId/clients` - Get clients in specific room
-
-## Usage
-
-### Initialize WebSocket
-
-```javascript
-const websocket = require("./websocket");
+```123:129:/Users/viswajithka/Documents/GitHub/InfaMigrationUtilityServices/index.js
+// Initialize WebSocket service
 websocket.initialize(server);
+
+// Make websocket available globally for progress updates
+global.websocket = websocket;
 ```
 
-### Emit Progress Updates
+### Connection URL
 
-```javascript
-// Basic progress update
-websocket.emitProgressUpdate(jobId, {
-  status: 'pending',
-  progress: 50,
-  currentStep: 'Converting files...',
-  steps: [...]
-});
+- By default, the server listens on `PORT` from `.env` or 3001.
+- The Socket.IO client connects to the same origin as your API server, e.g. `http://localhost:3001`.
 
-// File conversion progress
-websocket.emitFileConversionProgress(jobId, convertedCount, totalFiles, elapsedTime, estimatedTime);
+### Client Setup (Browser)
 
-// Job completion
-websocket.emitJobCompleted(jobId, result);
+1) Include the Socket.IO client script from the server:
 
-// Job failure
-websocket.emitJobFailed(jobId, error);
+```html
+<script src="/socket.io/socket.io.js"></script>
 ```
 
-### Send Notifications
+2) Connect and listen for events:
 
-```javascript
-// System notification
-websocket.emitSystemNotification("Server maintenance in 5 minutes", "warning");
+```html
+<script>
+  const socket = io('http://localhost:3001');
+
+  socket.on('connect', () => {
+    console.log('Connected:', socket.id);
+  });
+
+  socket.on('connection-established', (data) => {
+    console.log('connection-established', data);
+  });
+
+  socket.on('progress-update', (data) => {
+    // Optional: filter by jobId
+    // if (data.jobId !== myJobId) return;
+    console.log('progress-update', data);
+  });
+
+  socket.on('system-notification', (data) => {
+    console.log('system-notification', data);
+  });
+
+  socket.on('job-statistics', (data) => {
+    console.log('job-statistics', data);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Disconnected');
+  });
+</script>
 ```
 
-### Get Statistics
+You can also use the included test pages:
 
-```javascript
-const clientCount = websocket.getConnectedClientsCount();
-const clients = websocket.getConnectedClients();
-const roomClients = websocket.getClientsInRoom("job_123");
-```
+- `http://localhost:3001/progress-listener.html` for a UI that logs events and shows progress.
+- `http://localhost:3001/debug-socketio.html` for a minimal connectivity check.
 
-## Client Events
-
-### Connection Events
-
-- `connect` - Client connected
-- `disconnect` - Client disconnected
-
-### Room Management
-
-- `join-job` - Join job room for progress updates
-- `leave-job` - Leave job room
-- `job-completed` - Notify server that job is completed (triggers cleanup)
-
-### Progress Updates
-
-- `progress-update` - Real-time progress information
-- `system-notification` - System-wide notifications
-- `job-statistics` - Job processing statistics
-
-## Sample Data
-
-### Progress Update Event Data
-
-When listening to `progress-update`, you'll receive data in this format:
-
-```javascript
-{
-  "jobId": "test_DigitalBankingPortal",
-  "timestamp": "2025-10-23T14:31:04.266Z",
-  "status": "completed", // "pending", "completed", "failed"
-  "progress": 100, // 0-100
-  "currentStep": "Final package created",
-  "steps": [
-    { "name": "Analyzing .NET project", "progress": 100 },
-    { "name": "Converting C# to Java", "progress": 100 },
-    { "name": "Generating Quarkus project", "progress": 100 },
-    { "name": "Creating final package", "progress": 100 }
-  ],
-  "result": {
-    "analysis": {
-      "totalFiles": 36,
-      "csharpFiles": 18,
-      "linesOfCode": 811,
-      "fileSize": "41.12 KB"
-    },
-    "conversion": {
-      "totalConverted": 18,
-      "totalFiles": 18,
-      "successRate": 100
-    },
-    "zipFilename": "converted_test_DigitalBankingPortal_2025-10-23T14-31-04-237Z.zip"
-  },
-  "error": null, // Error message if failed
-  "createdAt": "2025-10-23T14:30:26.510Z",
-  "updatedAt": "2025-10-23T14:31:04.266Z",
-  "completedAt": "2025-10-23T14:31:04.266Z",
-  "failedAt": null
-}
-```
-
-### File Conversion Progress Data
-
-During file conversion, you'll receive detailed progress:
-
-```javascript
-{
-  "jobId": "test_DigitalBankingPortal",
-  "timestamp": "2025-10-23T14:30:53.399Z",
-  "status": "pending",
-  "progress": 40,
-  "currentStep": "Converted 12/18 files (27s elapsed, ~13s remaining)",
-  "filesConverted": 12,
-  "totalFiles": 18,
-  "elapsedTime": 27000, // milliseconds
-  "estimatedTime": 13000, // milliseconds
-  "steps": [
-    { "name": "Analyzing .NET project", "progress": 100 },
-    { "name": "Converting C# to Java", "progress": 40 },
-    { "name": "Generating Quarkus project", "progress": 0 },
-    { "name": "Creating final package", "progress": 0 }
-  ]
-}
-```
-
-## Example Client Code
-
-### Local Development
-
-```javascript
-// Better approach - use environment variables or config
-const serverUrl = process.env.SOCKET_URL || "http://localhost:8000";
-const socket = io(serverUrl);
-
-// Connect and join job room
-socket.on("connect", () => {
-  // Job ID naming conventions:
-  // - Test conversion: 'test_DigitalBankingPortal'
-  // - Custom conversion: 'convert_[filename]' (e.g., 'convert_MyProject')
-  // - Uploaded file: 'convert_[original-filename]' (e.g., 'convert_MyApp-v1.0')
-
-  socket.emit("join-job", "test_DigitalBankingPortal");
-});
-
-// Listen for progress updates
-socket.on("progress-update", (data) => {
-  console.log(`Progress: ${data.progress}% - ${data.currentStep}`);
-  console.log(`Files: ${data.filesConverted || 0}/${data.totalFiles || 0}`);
-  console.log(`Elapsed: ${Math.round((data.elapsedTime || 0) / 1000)}s`);
-
-  if (data.status === "completed") {
-    console.log("🎉 Conversion completed!");
-    console.log(`📦 Zip file: ${data.result?.zipFilename}`);
-  } else if (data.status === "failed") {
-    console.log("❌ Conversion failed:", data.error);
-  }
-});
-
-// Listen for system notifications
-socket.on("system-notification", (data) => {
-  console.log(`🔔 ${data.type.toUpperCase()}: ${data.message}`);
-});
-
-// Leave job room when done
-socket.emit("leave-job", "test_DigitalBankingPortal");
-
-// Notify server of job completion (triggers cleanup)
-socket.emit("job-completed", "test_DigitalBankingPortal");
-
-// Disconnect socket after job completion
-socket.disconnect();
-```
-
-## Socket Cleanup
-
-### Automatic Cleanup
-
-The client automatically disconnects the socket after job completion:
-
-```javascript
-socket.on("progress-update", (data) => {
-  if (data.status === "completed" || data.status === "failed") {
-    // Wait 3 seconds then disconnect
-    setTimeout(() => {
-      socket.emit("job-completed", data.jobId);
-      socket.emit("leave-job", data.jobId);
-      socket.disconnect();
-    }, 3000);
-  }
-});
-```
-
-### Manual Cleanup
-
-```javascript
-// Manual disconnect
-function disconnect() {
-  if (socket) {
-    socket.emit("job-completed", currentJobId);
-    socket.emit("leave-job", currentJobId);
-    socket.disconnect();
-  }
-}
-```
-
-### Server-Side Cleanup
-
-The server automatically handles cleanup when receiving `job-completed` events:
-
-```javascript
-socket.on("job-completed", (jobId) => {
-  console.log(`📋 Job completed, cleaning up room: ${jobId}`);
-  socket.leave(jobId);
-  // Remove from client room tracking
-});
-```
-
-## Job ID Naming Conventions
-
-### Test Conversion
-
-- **Job ID**: `test_DigitalBankingPortal`
-- **Usage**: For testing with the sample DigitalBankingPortal project
-- **Join**: `socket.emit('join-job', 'test_DigitalBankingPortal')`
-
-### Custom File Conversion
-
-- **Job ID**: `convert_[filename]`
-- **Examples**:
-  - `convert_MyProject` (for MyProject.zip)
-  - `convert_MyApp-v1.0` (for MyApp-v1.0.zip)
-  - `convert_EnterpriseApp` (for EnterpriseApp.zip)
-- **Join**: `socket.emit('join-job', 'convert_MyProject')`
-
-### Uploaded File Conversion
-
-- **Job ID**: `convert_[original-filename-without-extension]`
-- **Examples**:
-  - Upload: `MyProject.zip` → Job ID: `convert_MyProject`
-  - Upload: `MyApp-v1.0.zip` → Job ID: `convert_MyApp-v1.0`
-  - Upload: `EnterpriseApp.zip` → Job ID: `convert_EnterpriseApp`
-
-## Deployment Scenarios
-
-### Local Development
-
-- **Socket.IO URL**: `http://localhost:8000`
-- **API Base**: `http://localhost:8000/api`
-- **WebSocket Endpoint**: `ws://localhost:8000/socket.io/`
-
-### Production Deployment Examples
-
-#### Heroku
-
-```javascript
-const socket = io("https://your-app-name.herokuapp.com");
-```
-
-#### AWS/Google Cloud/Azure
-
-```javascript
-const socket = io("https://your-domain.com");
-// or with custom port
-const socket = io("https://your-domain.com:8000");
-```
-
-#### Docker Container
-
-```javascript
-const socket = io("https://your-domain.com");
-// or if using custom port mapping
-const socket = io("https://your-domain.com:3000");
-```
-
-#### Subdomain Setup
-
-```javascript
-const socket = io("https://api.your-domain.com");
-// or
-const socket = io("https://migration-tool.your-domain.com");
-```
-
-### Environment-Based Configuration
-
-#### Server-Side (.env)
+### Client Setup (Node.js)
 
 ```bash
-# Development
-SOCKET_URL=http://localhost:8000
-API_URL=http://localhost:8000
-
-# Production
-SOCKET_URL=https://your-domain.com
-API_URL=https://your-domain.com
+npm install socket.io-client
 ```
 
-#### Client-Side Configuration
+```js
+const { io } = require('socket.io-client');
+const socket = io('http://localhost:3001');
 
-```javascript
-// Auto-detect environment
-const isDevelopment = window.location.hostname === "localhost";
-const socketUrl = isDevelopment
-  ? "http://localhost:8000"
-  : "https://your-production-domain.com";
-
-const socket = io(socketUrl);
+socket.on('connect', () => console.log('Connected', socket.id));
+socket.on('progress-update', (data) => console.log('progress-update', data));
+socket.on('system-notification', (data) => console.log('system-notification', data));
+socket.on('disconnect', () => console.log('Disconnected'));
 ```
 
-#### React/Vue/Angular Environment
+### Events
 
-```javascript
-// Using environment variables
-const socket = io(process.env.REACT_APP_SOCKET_URL || "http://localhost:8000");
+Server emits these events to clients:
+
+- `connection-established` (on connect)
+  - Payload: `{ message, clientId, timestamp }`
+
+- `progress-update` (broadcast)
+  - Payload fields (sample superset):
+    - `jobId`: string
+    - `status`: `'created' | 'pending' | 'completed' | 'failed'`
+    - `progress`: number (0-100)
+    - `currentStep`: string
+    - `steps`: optional array/metadata
+    - `result`: any (on completion)
+    - `error`: any (on failure)
+    - `filesConverted`, `totalFiles`, `elapsedTime`, `estimatedTime`
+    - `createdAt`, `updatedAt`, `completedAt`, `failedAt`
+    - `timestamp`: ISO string (set by server when broadcasting)
+
+- `system-notification`
+  - Payload: `{ message, type: 'info' | 'warning' | 'error', timestamp }`
+
+- `job-statistics`
+  - Payload: `{ connectedClients, activeJobs, timestamp }`
+
+Optional client-to-server events:
+
+- `join-job` (`jobId: string`) — joins a room for that job (future room-scoped emits)
+- `leave-job` (`jobId: string`)
+- `ping` — server replies with `pong` and a timestamp
+
+```24:79:/Users/viswajithka/Documents/GitHub/InfaMigrationUtilityServices/websocket/socketService.js
+this.io.on('connection', (socket) => {
+  socket.emit('connection-established', { ... });
+  socket.on('join-job', (jobId) => socket.join(jobId));
+  socket.on('leave-job', (jobId) => socket.leave(jobId));
+  socket.on('ping', () => socket.emit('pong', { timestamp: new Date().toISOString() }));
+});
 ```
 
-## Configuration
+### Emitting Progress from the Server
 
-The WebSocket service is configured with:
+Use the exported helpers in `websocket/index.js` from controllers/services/workers.
 
-- CORS enabled for all origins
-- Support for GET and POST methods
-- Automatic client tracking
-- Room-based message targeting
-- **HTTPS support** for production deployments
+```1:21:/Users/viswajithka/Documents/GitHub/InfaMigrationUtilityServices/websocket/index.js
+module.exports = {
+  initialize: (server) => socketService.initialize(server),
+  emitProgressUpdate: (jobId, data) => progressEmitter.emitProgressUpdate(jobId, data),
+  emitJobCompleted: (jobId, result) => progressEmitter.emitJobCompleted(jobId, result),
+  emitJobFailed: (jobId, error) => progressEmitter.emitJobFailed(jobId, error),
+  emitFileConversionProgress: (jobId, convertedCount, totalFiles, elapsedTime, estimatedTime) => 
+    progressEmitter.emitFileConversionProgress(jobId, convertedCount, totalFiles, elapsedTime, estimatedTime),
+  emitSystemNotification: (message, type) => progressEmitter.emitSystemNotification(message, type),
+  setJobContext: (jobId, context) => progressEmitter.setJobContext(jobId, context),
+  emitProgressUpdateToAll: (data) => socketService.emitProgressUpdateToAll(data),
+  emitToAll: (event, data) => socketService.emitToAll(event, data),
+};
+```
 
-## Error Handling
+Common patterns:
 
-- Automatic reconnection support
-- Graceful error handling for failed connections
-- Client cleanup on disconnect
-- Service cleanup on server shutdown
+```js
+// When a job is created
+global.websocket.emitProgressUpdate(jobId, {
+  status: 'created',
+  progress: 0,
+  currentStep: 'Job created',
+  steps: ['validate', 'analyze', 'convert', 'package']
+});
+
+// During conversion steps
+global.websocket.emitProgressUpdate(jobId, {
+  status: 'pending',
+  progress: 42,
+  currentStep: 'Converting procedures'
+});
+
+// File-level progress helper
+global.websocket.emitFileConversionProgress(jobId, convertedCount, totalFiles, elapsedMs, etaMs);
+
+// On success
+global.websocket.emitJobCompleted(jobId, { outputZip: 'converted_xxx.zip' });
+
+// On failure
+global.websocket.emitJobFailed(jobId, { message: 'Parse error', details: ... });
+```
+
+### REST Utilities for Testing
+
+The API exposes test endpoints under `/api/websocket`:
+
+- `GET /api/websocket/stats` — returns connected client count and details
+- `GET /api/websocket/test` — emits a sample system notification
+- `POST /api/websocket/notify` — emits a custom system notification `{ message, type }`
+
+See `index.js` root endpoint for a quick reference of available routes.
+
+### Authentication
+
+- The current Socket.IO configuration allows all origins (`cors: { origin: "*" }`) and does not enforce auth tokens.
+- If you need JWT-based auth, add a Socket.IO middleware that validates the token from `auth` query or `Authorization` header and disconnects unauthorized clients.
+
+### Deployment Notes
+
+- Socket.IO is served at `/<namespace>` automatically by the same HTTP server. Ensure any reverse proxy (Nginx/Ingress) forwards WebSocket upgrades.
+- Typical proxy config must allow `Upgrade` and `Connection: upgrade` headers and support long-lived connections.
+- If hosting UI separately, set `cors.origin` to your UI origin(s) instead of `*`.
+
+### Troubleshooting
+
+- Client cannot load `/socket.io/socket.io.js`:
+  - Open the page through the server (e.g., `http://localhost:3001/progress-listener.html`), not `file://`.
+  - Ensure the API server is running and port is correct.
+
+- No `progress-update` events received:
+  - Verify the server emits via `global.websocket.emitProgressUpdate(...)`.
+  - Check server logs for "Emitted progress update" lines.
+  - Confirm your client is connected and not filtering out a different `jobId`.
+
+- Proxy/Firewall issues:
+  - Ensure WebSocket upgrade headers are forwarded correctly.
+  - Allow persistent connections and large timeouts.
+
+### Helpful Test Pages in this Repo
+
+- `public/progress-listener.html` — connect/log progress with optional `jobId` filter.
+- `public/debug-socketio.html` — quick connectivity diagnostics.
+
+### Versioning
+
+- Server: `socket.io` (see `package.json`).
+- Client: served via `/socket.io/socket.io.js` from the server; for Node clients use the matching `socket.io-client` version.
+
+

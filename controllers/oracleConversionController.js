@@ -565,12 +565,46 @@ const handleConvert = async (req, res) => {
       
       // Convert the code directly
       const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, inputFileName);
-      
+
+      // Persist output artifacts per requested format (sql|json|docx|all)
+      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      await fs.ensureDir(outputsRoot);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = inputFileName.endsWith('.sql') ? inputFileName.replace(/\.sql$/i, '') : inputFileName;
+      const { outputFormat = 'sql' } = req.body || {};
+      const wantSql = outputFormat === 'sql' || outputFormat === 'all';
+      const wantJson = outputFormat === 'json' || outputFormat === 'all';
+      const wantDocx = outputFormat === 'docx' || outputFormat === 'all';
+      const outputFiles = [];
+
+      if (wantSql) {
+        const outFileName = `${base}_snowflake_${timestamp}.sql`;
+        const outPath = path.join(outputsRoot, outFileName);
+        await fs.writeFile(outPath, convertedCode, 'utf8');
+        outputFiles.push({ name: outFileName, path: path.resolve(outPath), mime: 'text/sql', kind: 'single' });
+      }
+      if (wantJson) {
+        const jsonName = `${base}_snowflake_${timestamp}.json`;
+        const jsonPath = path.join(outputsRoot, jsonName);
+        await fs.writeFile(jsonPath, JSON.stringify({ fileName: inputFileName, snowflake: convertedCode }, null, 2), 'utf8');
+        outputFiles.push({ name: jsonName, path: path.resolve(jsonPath), mime: 'application/json', kind: 'single' });
+      }
+      if (wantDocx) {
+        const documentService = require('../services/documentService');
+        const docxBuf = await documentService.markdownToDocxBuffer('``\`sql\n' + convertedCode + '\n``\`', inputFileName);
+        const docxName = `${base}_snowflake_${timestamp}.docx`;
+        const docxPath = path.join(outputsRoot, docxName);
+        await fs.writeFile(docxPath, docxBuf);
+        outputFiles.push({ name: docxName, path: path.resolve(docxPath), mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', kind: 'single' });
+      }
+
       return res.status(200).json({
         success: true,
         fileName: inputFileName,
         conversionType: 'oracle-to-snowflake',
-        result: convertedCode
+        originalContent: sourceCode,
+        convertedContent: convertedCode,
+        outputFiles
       });
     }
     
@@ -813,9 +847,30 @@ const getProgress = async (req, res) => {
 // Function to serve the generated zip file
 const serveZipFile = async (req, res) => {
   try {
-    const { filename } = req.body;
+    const { filename, filePath } = req.body;
     
-    // Validate filename to prevent directory traversal attacks
+    // If filePath is provided, allow downloading files generated under known output roots
+    if (filePath) {
+      const allowedRoots = [
+        path.resolve(process.env.ZIPS_PATH || './zips'),
+        path.resolve(process.env.OUTPUT_PATH || './output'),
+        path.resolve(process.env.IDMC_PATH || './idmc_output')
+      ];
+      const resolved = path.resolve(filePath);
+      const isAllowed = allowedRoots.some(root => resolved.startsWith(root + path.sep) || resolved === root);
+      if (!isAllowed) {
+        return res.status(400).json({ error: 'Invalid filePath', message: 'Requested path is not in an allowed output directory' });
+      }
+      const stats = await fs.stat(resolved);
+      if (!stats.isFile()) {
+        return res.status(400).json({ error: 'Invalid file type', message: 'Requested path is not a file' });
+      }
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Content-Disposition', `attachment; filename="${path.basename(resolved)}"`);
+      return fs.createReadStream(resolved).pipe(res);
+    }
+
+    // Otherwise, support legacy behavior by filename from zips folder only
     if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
       return res.status(400).json({ 
         error: 'Invalid filename',
@@ -823,7 +878,7 @@ const serveZipFile = async (req, res) => {
         example: { filename: 'converted_oracle_snowflake_2024-01-15T10-30-45-123Z.zip' }
       });
     }
-    
+
     const zipsPath = process.env.ZIPS_PATH || './zips';
     const zipPath = path.join(zipsPath, filename);
     
@@ -895,12 +950,33 @@ const handleDirectCodeConversion = async (req, res) => {
       mappingSummary = await idmcService.convertRedshiftCodeToIdmc(sourceCode, fileName);
     }
     
-    // Return the converted code or mapping summary
+    // For Snowflake single-file conversions, also persist a .sql output
+    if (conversionType === 'oracle-to-snowflake') {
+      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      await fs.ensureDir(outputsRoot);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = fileName.endsWith('.sql') ? fileName.replace(/\.sql$/i, '') : fileName;
+      const outFileName = `${base}_snowflake_${timestamp}.sql`;
+      const outPath = path.join(outputsRoot, outFileName);
+      await fs.writeFile(outPath, convertedCode, 'utf8');
+
     return res.status(200).json({
       success: true,
       fileName,
       conversionType,
-      result: conversionType.includes('idmc') ? mappingSummary : convertedCode
+        originalContent: req.body.sourceCode,
+        convertedContent: convertedCode,
+        outputFiles: [ { name: outFileName, path: path.resolve(outPath), mime: 'text/sql', kind: 'single' } ]
+      });
+    }
+
+    // Return IDMC mapping summary including original content for UI display
+    return res.status(200).json({
+      success: true,
+      fileName,
+      conversionType,
+      originalContent: req.body.sourceCode,
+      convertedContent: mappingSummary
     });
   } catch (error) {
     console.error('❌ Error in direct code conversion:', error);
@@ -1076,15 +1152,41 @@ const handleUnifiedConvert = async (req, res) => {
         return res.status(400).json({ error: 'sourceCode is required for single inputType' });
       }
 
+      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      await fs.ensureDir(outputsRoot);
+      const baseName = (fileName || 'input.sql').replace(/\s+/g, '_');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      // Emit basic websocket lifecycle for single-file jobs
+      const jobIdSingle = `unified_${target}_single_${timestamp}`;
+      try {
+        const apiCtx = { method: req.method, path: req.originalUrl || req.url, endpoint: 'single-convert' };
+        require('../websocket').setJobContext(jobIdSingle, apiCtx);
+        progressEmitter.emitJobCreated(jobIdSingle, { steps: [], createdAt: new Date() });
+      } catch (_) {}
+
       if (target === 'snowflake') {
-        const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, fileName || 'input.sql');
-        return res.status(200).json({ success: true, conversionType: 'oracle-to-snowflake', fileName: fileName || 'input.sql', result: convertedCode });
+        const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, baseName);
+        // Save .sql output
+        const outFileName = baseName.endsWith('.sql') ? baseName.replace(/\.sql$/i, `_snowflake_${timestamp}.sql`) : `${baseName}_snowflake_${timestamp}.sql`;
+        const outPath = path.join(outputsRoot, outFileName);
+        await fs.writeFile(outPath, convertedCode, 'utf8');
+        try { progressEmitter.emitStepUpdate(jobIdSingle, 1, 90, 'Saving converted output'); } catch (_) {}
+        try { progressEmitter.emitJobCompleted(jobIdSingle, { outputFiles: [{ name: outFileName, path: path.resolve(outPath) }] }); } catch (_) {}
+        return res.status(200).json({
+          success: true,
+          conversionType: 'oracle-to-snowflake',
+          fileName: baseName,
+          jsonContent: convertedCode,
+          jobId: jobIdSingle,
+          outputFiles: [
+            { name: outFileName, path: path.resolve(outPath), mime: 'text/sql', kind: 'single' }
+          ]
+        });
       }
 
       // IDMC single: auto-detect when sourceType not provided or set to auto
       const idmcService = require('../services/idmcConversionService');
-      let idmcSummary;
-      const name = fileName || 'input.sql';
+      const name = baseName;
       let resolvedType = sourceType;
       if (!resolvedType || resolvedType === 'auto') {
         resolvedType = detectSourceTypeFromNameAndContent(name, sourceCode, 'sql');
@@ -1093,12 +1195,51 @@ const handleUnifiedConvert = async (req, res) => {
           resolvedType = idmcService.analyzeSqlContent(sourceCode) || 'sql';
         }
       }
-      if (resolvedType === 'redshift') {
-        idmcSummary = await idmcService.convertRedshiftToIDMC(sourceCode, name, 'sql');
-      } else {
-        idmcSummary = await idmcService.convertOracleToIDMC(sourceCode, name, 'sql');
+
+      const idmcSummary = resolvedType === 'redshift'
+        ? await idmcService.convertRedshiftToIDMC(sourceCode, name, 'sql')
+        : await idmcService.convertOracleToIDMC(sourceCode, name, 'sql');
+
+      // Persist outputs per requested format
+      const wantJson = outputFormat === 'json' || outputFormat === 'all';
+      const wantDocx = outputFormat === 'docx' || outputFormat === 'all';
+      const wantSql = outputFormat === 'sql' || outputFormat === 'all';
+      const outputFiles = [];
+
+      if (wantJson) {
+        const jsonName = name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.json`);
+        const jsonPath = path.join(outputsRoot, jsonName);
+        await fs.writeFile(jsonPath, idmcSummary, 'utf8');
+        outputFiles.push({ name: jsonName, path: path.resolve(jsonPath), mime: 'application/json', kind: 'single' });
       }
-      return res.status(200).json({ success: true, conversionType: `${resolvedType}-to-idmc`, fileName: name, result: idmcSummary });
+
+      if (wantDocx) {
+        const documentService = require('../services/documentService');
+        const docxBuf = await documentService.markdownToDocxBuffer(idmcSummary, name);
+        const docxName = name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.docx`);
+        const docxPath = path.join(outputsRoot, docxName);
+        await fs.writeFile(docxPath, docxBuf);
+        outputFiles.push({ name: docxName, path: path.resolve(docxPath), mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', kind: 'single' });
+      }
+
+      if (wantSql) {
+        // Save the original SQL input for convenience
+        const sqlName = name.endsWith('.sql') ? name.replace(/\.sql$/i, `_original_${timestamp}.sql`) : `${name}_original_${timestamp}.sql`;
+        const sqlPath = path.join(outputsRoot, sqlName);
+        await fs.writeFile(sqlPath, sourceCode, 'utf8');
+        outputFiles.push({ name: sqlName, path: path.resolve(sqlPath), mime: 'text/sql', kind: 'single' });
+      }
+
+      try { progressEmitter.emitStepUpdate(jobIdSingle, 1, 90, 'Saving converted output'); } catch (_) {}
+      try { progressEmitter.emitJobCompleted(jobIdSingle, { outputFiles }); } catch (_) {}
+      return res.status(200).json({
+        success: true,
+        conversionType: `${resolvedType}-to-idmc`,
+        fileName: name,
+        jsonContent: idmcSummary,
+        jobId: jobIdSingle,
+        outputFiles
+      });
     }
 
     // ZIP conversions
@@ -1112,6 +1253,10 @@ const handleUnifiedConvert = async (req, res) => {
     const baseName = path.basename(zipFilePath, path.extname(zipFilePath));
     jobId = `unified_${target}_${baseName}`;
     const job = progressService.createJob(jobId);
+    try {
+      const apiCtx = { method: req.method, path: req.originalUrl || req.url, endpoint: 'unified-convert' };
+      require('../websocket').setJobContext(jobId, apiCtx);
+    } catch (_) {}
     progressEmitter.emitJobCreated(jobId, job);
     progressService.updateProgress(jobId, 0, 5, 'Initializing conversion...');
     progressEmitter.emitStepUpdate(jobId, 0, 5, 'Initializing conversion...');
@@ -1148,14 +1293,36 @@ const handleUnifiedConvert = async (req, res) => {
       const zipsPath = process.env.ZIPS_PATH || './zips';
       await fs.ensureDir(zipsPath);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const outZipName = `converted_oracle_snowflake_${timestamp}.zip`;
+      const outFmt = (req.body && req.body.outputFormat) || 'sql';
+      const wantSql = outFmt === 'sql' || outFmt === 'all';
+      const wantJson = outFmt === 'json' || outFmt === 'all';
+      const wantDocx = outFmt === 'docx' || outFmt === 'all';
+      const outZipName = `converted_oracle_snowflake_${(wantDocx&&wantJson&&wantSql)?'all':(wantDocx?'docx':(wantJson?'json':'sql'))}_${timestamp}.zip`;
       const outZipPath = path.join(zipsPath, outZipName);
-      await createSnowflakeZipFile(conversionResult.snowflakeFiles, outZipPath);
+
+      // Build files for zip per requested formats
+      const filesForZip = [];
+      for (const f of conversionResult.snowflakeFiles) {
+        const baseNoExt = f.name.replace(/\.sql$/i, '');
+        if (wantSql) {
+          filesForZip.push({ name: `${baseNoExt}.sql`, content: f.content });
+        }
+        if (wantJson) {
+          filesForZip.push({ name: `${baseNoExt}.json`, content: JSON.stringify({ fileName: f.name, snowflake: f.content }, null, 2) });
+        }
+        if (wantDocx) {
+          const documentService = require('../services/documentService');
+          const docxBuf = await documentService.markdownToDocxBuffer('``\`sql\n' + f.content + '\n``\`', f.name);
+          filesForZip.push({ name: `${baseNoExt}.docx`, content: docxBuf });
+        }
+      }
+
+      await createSnowflakeZipFile(filesForZip, outZipPath);
       progressService.updateProgress(jobId, 2, 100, 'Completed');
       progressEmitter.emitJobCompleted(jobId, { conversion: conversionResult, zipFilename: outZipName });
 
-      progressService.completeJob(jobId, { conversion: conversionResult, zipFilename: outZipName });
-      return res.status(200).json({ success: true, target, jobId, zipFilename: outZipName, conversion: conversionResult });
+      progressService.completeJob(jobId, { conversion: conversionResult, zipFilename: outZipName, zipFilePath: path.resolve(outZipPath) });
+      return res.status(200).json({ success: true, target, jobId, zipFilename: outZipName, zipFilePath: path.resolve(outZipPath), jsonContent: null, conversion: conversionResult });
     }
 
     // IDMC (zip): use worker pool for per-file conversion
@@ -1216,10 +1383,11 @@ const handleUnifiedConvert = async (req, res) => {
         convertedFiles,
         errors: convertedFiles.filter(f => !f.success)
       },
-      zipFilename: outZipName
+      zipFilename: outZipName,
+      zipFilePath: path.resolve(outZipPath)
     };
     progressService.completeJob(jobId, result);
-    return res.status(200).json({ success: true, target, jobId, ...result });
+    return res.status(200).json({ success: true, target, jobId, jsonContent: null, ...result });
   } catch (error) {
     if (jobId) {
       progressService.failJob(jobId, error.message);
@@ -1233,8 +1401,26 @@ const handleUnifiedConvert = async (req, res) => {
   }
 };
 
+// Test helper: run unified IDMC conversion using bundled sample-oracle-files.zip (no auth required)
+const handleTestUnifiedIDMC = async (req, res) => {
+  try {
+    const sampleZip = path.join(__dirname, '..', 'sample-oracle-files.zip');
+    req.body = {
+      inputType: 'zip',
+      target: 'idmc',
+      sourceType: 'auto',
+      zipFilePath: sampleZip,
+      outputFormat: 'json'
+    };
+    return handleUnifiedConvert(req, res);
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 module.exports = {
   handleTestConversion,
+  handleTestUnifiedIDMC,
   handleConvert,
   getProgress,
   serveZipFile,
