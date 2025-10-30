@@ -1,8 +1,9 @@
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const config = require('../config');
 
-const uploadPath = path.join(__dirname, '..', 'uploads');
+const uploadPath = config.paths.uploads;
 if (!fs.existsSync(uploadPath)) {
   fs.mkdirSync(uploadPath);
 }

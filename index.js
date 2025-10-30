@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require("body-parser");
 const { createServer } = require('http');
+const config = require('./config');
 const app = express();
 const server = createServer(app);
 
@@ -15,7 +16,7 @@ const { logger } = require('./utils/logger');
 const websocket = require('./websocket');
 
 
-const PORT = process.env.PORT || 3001;
+const PORT = config.port;
 
 // Security middleware
 app.use(securityHeaders);
@@ -135,6 +136,7 @@ const start = async()=>{
     server.listen(PORT, () => {
       logger.info(`🚀 Server listening on port ${PORT}`, {
         port: PORT,
+        env: config.nodeEnv,
         timestamp: new Date().toISOString()
       });
     });

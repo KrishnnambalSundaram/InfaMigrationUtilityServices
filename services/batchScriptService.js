@@ -1,6 +1,8 @@
 const fs = require('fs-extra');
 const path = require('path');
 const idmcConversionService = require('./idmcConversionService');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('services/batchScriptService');
 
 class BatchScriptService {
   constructor() {
@@ -167,7 +169,7 @@ class BatchScriptService {
       const extractedSQL = [];
       const patterns = this.sqlPatterns[scriptType] || this.sqlPatterns.general;
       
-      console.log(`Extracting SQL from ${scriptType} batch script...`);
+      log.info(`Extracting SQL from ${scriptType} batch script...`);
       
       for (const pattern of patterns) {
         let match;
@@ -193,7 +195,7 @@ class BatchScriptService {
       const uniqueSQL = this.removeDuplicateSQL(extractedSQL);
       uniqueSQL.sort((a, b) => a.lineNumber - b.lineNumber);
       
-      console.log(`Extracted ${uniqueSQL.length} SQL statements from batch script`);
+      log.info(`Extracted ${uniqueSQL.length} SQL statements from batch script`);
       
       return {
         totalStatements: uniqueSQL.length,
@@ -202,7 +204,7 @@ class BatchScriptService {
       };
       
     } catch (error) {
-      console.error('Error extracting SQL from batch script:', error);
+      log.error('Error extracting SQL from batch script', { error: error.message, stack: error.stack });
       throw new Error(`SQL extraction failed: ${error.message}`);
     }
   }
@@ -281,7 +283,8 @@ class BatchScriptService {
     try {
       const content = await fs.readFile(filePath, 'utf8');
       const fileName = path.basename(filePath);
-      return await this.processBatchScriptContent(content, fileName);
+      const result = await this.processBatchScriptContent(content, fileName);
+      return { ...result, originalContent: content };
     } catch (error) {
       console.error(`Error processing batch script file ${filePath}:`, error);
       return {
@@ -289,6 +292,7 @@ class BatchScriptService {
         scriptType: 'unknown',
         extractionResult: null,
         idmcSummaries: [],
+        originalContent: null,
         success: false,
         error: error.message
       };
@@ -329,7 +333,7 @@ class BatchScriptService {
         }
       }
       
-      console.log(`Processing batch script: ${fileName} (type: ${detectedScriptType})`);
+      log.info(`Processing batch script: ${fileName} (type: ${detectedScriptType})`);
       
       // Extract SQL statements
       const extractionResult = await this.extractSQLFromBatchScript(content, detectedScriptType);
@@ -339,7 +343,7 @@ class BatchScriptService {
       for (let i = 0; i < extractionResult.statements.length; i++) {
         const sqlStatement = extractionResult.statements[i];
         try {
-          console.log(`Converting SQL statement ${i + 1}/${extractionResult.statements.length}: ${sqlStatement.type}`);
+          log.info(`Converting SQL statement ${i + 1}/${extractionResult.statements.length}: ${sqlStatement.type}`);
           
           let idmcSummary;
           if (detectedScriptType === 'redshift') {
@@ -365,7 +369,7 @@ class BatchScriptService {
           });
           
         } catch (error) {
-          console.error(`Error converting SQL statement ${i + 1}:`, error);
+          log.error(`Error converting SQL statement ${i + 1}`, { error: error.message, stack: error.stack });
           idmcSummaries.push({
             statement: sqlStatement.statement,
             type: sqlStatement.type,
@@ -379,7 +383,7 @@ class BatchScriptService {
       
       // Fallback: If no SQL statements were found, still produce a high-level IDMC-style summary
       if (extractionResult.totalStatements === 0) {
-        console.log('No SQL detected in batch script; generating orchestration-level IDMC summary');
+        log.info('No SQL detected in batch script; generating orchestration-level IDMC summary');
         const md = this.summarizeBatchScriptContent(content, fileName);
         idmcSummaries.push({
           statement: null,
@@ -395,11 +399,12 @@ class BatchScriptService {
         scriptType: detectedScriptType,
         extractionResult: extractionResult,
         idmcSummaries: idmcSummaries,
+        originalContent: content,
         success: true
       };
       
     } catch (error) {
-      console.error(`Error processing batch script content for ${fileName}:`, error);
+      log.error(`Error processing batch script content for ${fileName}`, { error: error.message, stack: error.stack });
       return {
         fileName: fileName,
         scriptType: scriptType || 'unknown',

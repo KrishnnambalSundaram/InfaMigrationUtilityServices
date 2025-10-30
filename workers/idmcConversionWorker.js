@@ -1,6 +1,8 @@
 const { parentPort } = require('worker_threads');
 const fs = require('fs-extra');
 const path = require('path');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('workers/idmcConversionWorker');
 
 // Lazy load to avoid heavy init before first task
 let idmcService = null;
@@ -72,10 +74,12 @@ async function handleWork(message) {
         original: rel,
         converted: outName,
         idmcContent: idmcSummary,
-        detectedType: detected
+        detectedType: detected,
+        originalContent: code
       }
     });
   } catch (error) {
+    log.error('Worker error in IDMC conversion', { error: error.message, stack: error.stack });
     parentPort.postMessage({ success: false, error: error.message });
   }
 }

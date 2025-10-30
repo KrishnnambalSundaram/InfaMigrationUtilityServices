@@ -11,16 +11,20 @@ const execAsync = promisify(exec);
 const archiver = require('archiver');
 const { Worker } = require('worker_threads');
 const progressEmitter = require('../websocket/progressEmitter');
+const config = require('../config');
+const { assertPathUnder } = require('../utils/pathUtils');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('controllers/oracleConversionController');
 
 // Helper function to get file size
 async function getFileSize(filePath) {
   try {
     const stats = await fs.stat(filePath);
     const size = oracleFileAnalysisService.formatFileSize(stats.size);
-    console.log(`📊 File size: ${size} for ${filePath}`);
+    log.info(`📊 File size: ${size} for ${filePath}`);
     return size;
   } catch (error) {
-    console.error(`❌ Error getting file size for ${filePath}:`, error);
+    log.error(`❌ Error getting file size for ${filePath}`, { error: error.message });
     return 'Unknown';
   }
 }
@@ -39,14 +43,14 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   });
   const totalFiles = sortedOracleFiles.length;
   
-  console.log(`Found ${totalFiles} Oracle files to convert using worker threads`);
-  console.log(`📋 Files in order:`);
+  log.info(`Found ${totalFiles} Oracle files to convert using worker threads`);
+  log.info(`📋 Files in order:`);
   sortedOracleFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${path.basename(file)}`);
+    log.info(`  ${index + 1}. ${path.basename(file)}`);
   });
   
   if (totalFiles === 0) {
-    console.log('⚠️ No Oracle files found to convert');
+    log.warn('⚠️ No Oracle files found to convert');
     return {
       convertedFiles: [],
       snowflakeFiles: [],
@@ -56,10 +60,10 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   }
   
   // Use workers for all file counts - they're more efficient
-  console.log(`📝 Processing ${totalFiles} files using worker threads`);
+  log.info(`📝 Processing ${totalFiles} files using worker threads`);
   
   // Create converted directory
-  const convertedPath = process.env.CONVERTED_PATH || './converted';
+  const convertedPath = config.paths.output || './converted';
   await fs.ensureDir(convertedPath);
   
   // Process files in parallel using worker threads
@@ -68,7 +72,7 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   const fileQueue = [...sortedOracleFiles];
   const results = [];
   
-  console.log(`Starting ${maxWorkers} worker threads for parallel processing`);
+  log.info(`Starting ${maxWorkers} worker threads for parallel processing`);
   
   // Create workers
   for (let i = 0; i < maxWorkers; i++) {
@@ -76,11 +80,11 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     worker.workerId = i + 1; // Add worker ID for tracking
     workers.push(worker);
     
-    console.log(`🔧 Created Worker ${worker.workerId}`);
+    log.info(`🔧 Created Worker ${worker.workerId}`);
     
     worker.on('message', (result) => {
       if (result.success) {
-        console.log(`✅ Worker ${worker.workerId} completed: ${result.result.converted} (${results.length + 1}/${totalFiles})`);
+        log.info(`✅ Worker ${worker.workerId} completed: ${result.result.converted} (${results.length + 1}/${totalFiles})`);
         results.push(result.result);
         
         // Update progress
@@ -90,18 +94,18 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
         // Process next file if available
         if (fileQueue.length > 0) {
           const nextFile = fileQueue.shift();
-          console.log(`🔄 Worker ${worker.workerId} processing next file: ${path.basename(nextFile)}`);
+          log.info(`🔄 Worker ${worker.workerId} processing next file: ${path.basename(nextFile)}`);
           worker.postMessage({
             filePath: nextFile,
             extractedPath: extractedPath,
             convertedPath: convertedPath
           });
         } else {
-          console.log(`🏁 Worker ${worker.workerId} finished all assigned files`);
+          log.info(`🏁 Worker ${worker.workerId} finished all assigned files`);
           worker.terminate();
         }
       } else {
-        console.error(`❌ Worker ${worker.workerId} error: ${result.error}`);
+        log.error(`❌ Worker ${worker.workerId} error: ${result.error}`);
         results.push({
           original: 'unknown',
           converted: null,
@@ -112,34 +116,34 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
         // Process next file if available
         if (fileQueue.length > 0) {
           const nextFile = fileQueue.shift();
-          console.log(`🔄 Worker ${worker.workerId} retrying with next file: ${path.basename(nextFile)}`);
+          log.info(`🔄 Worker ${worker.workerId} retrying with next file: ${path.basename(nextFile)}`);
           worker.postMessage({
             filePath: nextFile,
             extractedPath: extractedPath,
             convertedPath: convertedPath
           });
         } else {
-          console.log(`🏁 Worker ${worker.workerId} finished all assigned files`);
+          log.info(`🏁 Worker ${worker.workerId} finished all assigned files`);
           worker.terminate();
         }
       }
     });
     
     worker.on('error', (error) => {
-      console.error(`❌ Worker ${worker.workerId} error:`, error);
+      log.error(`❌ Worker ${worker.workerId} error`, { error: error.message, stack: error.stack });
     });
     
     worker.on('exit', (code) => {
-      console.log(`🔚 Worker ${worker.workerId} exited with code ${code}`);
+      log.info(`🔚 Worker ${worker.workerId} exited with code ${code}`);
     });
   }
   
   // Start processing files
-  console.log(`🚀 Starting ${Math.min(maxWorkers, fileQueue.length)} workers with initial files...`);
-  console.log(`📊 Queue status: ${fileQueue.length} files remaining`);
+  log.info(`🚀 Starting ${Math.min(maxWorkers, fileQueue.length)} workers with initial files...`);
+  log.info(`📊 Queue status: ${fileQueue.length} files remaining`);
   for (let i = 0; i < Math.min(maxWorkers, fileQueue.length); i++) {
     const file = fileQueue.shift();
-    console.log(`🔄 Worker ${i + 1} starting with: ${path.basename(file)}`);
+    log.info(`🔄 Worker ${i + 1} starting with: ${path.basename(file)}`);
     workers[i].postMessage({
       filePath: file,
       extractedPath: extractedPath,
@@ -148,11 +152,11 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
   }
   
   // Wait for all workers to complete with timeout
-  console.log(`⏳ Waiting for ${totalFiles} files to be processed by ${maxWorkers} workers...`);
+  log.info(`⏳ Waiting for ${totalFiles} files to be processed by ${maxWorkers} workers...`);
   const startTime = Date.now();
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      console.warn('⚠️ Worker timeout after 10 minutes');
+      log.warn('⚠️ Worker timeout after 10 minutes');
       workers.forEach(worker => worker.terminate());
       reject(new Error('Worker timeout'));
     }, 600000); // 10 minute timeout
@@ -162,8 +166,8 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
         clearTimeout(timeout);
         const endTime = Date.now();
         const duration = (endTime - startTime) / 1000;
-        console.log(`🎉 All workers completed in ${duration.toFixed(2)} seconds`);
-        console.log(`📊 Performance: ${(totalFiles / duration).toFixed(2)} files/second`);
+        log.info(`🎉 All workers completed in ${duration.toFixed(2)} seconds`);
+        log.info(`📊 Performance: ${(totalFiles / duration).toFixed(2)} files/second`);
         resolve();
       } else {
         setTimeout(checkCompletion, 100);
@@ -171,7 +175,7 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     };
     checkCompletion();
   }).catch(async (error) => {
-    console.error('❌ Worker processing failed:', error.message);
+    log.error('❌ Worker processing failed', { error: error.message });
     workers.forEach(worker => worker.terminate());
     throw error; // Re-throw the error instead of falling back
   });
@@ -203,17 +207,17 @@ async function convertOracleFilesWithWorkers(extractedPath, analysis, jobId) {
     return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
   });
   
-  console.log(`📋 Converted files in response order:`);
+  log.info(`📋 Converted files in response order:`);
   convertedFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${file.original} -> ${file.converted}`);
+    log.info(`  ${index + 1}. ${file.original} -> ${file.converted}`);
   });
   
-  console.log(`📋 Snowflake files in zip order:`);
+  log.info(`📋 Snowflake files in zip order:`);
   snowflakeFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${file.name}`);
+    log.info(`  ${index + 1}. ${file.name}`);
   });
   
-  console.log(`Worker conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
+  log.info(`Worker conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
     convertedFiles,
@@ -238,14 +242,14 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
   });
   const totalFiles = sortedOracleFiles.length;
   
-  console.log(`Found ${totalFiles} Oracle files to convert`);
-  console.log(`📋 Files in order:`);
+  log.info(`Found ${totalFiles} Oracle files to convert`);
+  log.info(`📋 Files in order:`);
   sortedOracleFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${path.basename(file)}`);
+    log.info(`  ${index + 1}. ${path.basename(file)}`);
   });
   
   if (totalFiles === 0) {
-    console.log('⚠️ No Oracle files found to convert');
+    log.warn('⚠️ No Oracle files found to convert');
     return {
       convertedFiles: [],
       snowflakeFiles: [],
@@ -258,7 +262,7 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
   for (let i = 0; i < totalFiles; i++) {
     const currentFilePath = sortedOracleFiles[i];
     try {
-      console.log(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
+      log.info(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
       
       // Update progress for this step
       const stepProgress = Math.round(((i + 1) / totalFiles) * 90); // 90% of step 1
@@ -267,17 +271,17 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
       // Check file size to estimate conversion time
       const fileStats = await fs.stat(currentFilePath);
       const fileSizeKB = Math.round(fileStats.size / 1024);
-      console.log(`  File size: ${fileSizeKB} KB`);
+      log.info(`  File size: ${fileSizeKB} KB`);
       
       const oracleCode = await fs.readFile(currentFilePath, 'utf8');
       const relativePath = path.relative(extractedPath, currentFilePath);
       const fileType = await oracleConversionService.analyzeFileType(currentFilePath);
       const snowflakeFileName = oracleConversionService.getSnowflakeFileName(relativePath, fileType);
       
-      console.log(`Converting: ${path.basename(currentFilePath)} -> ${snowflakeFileName} (type: ${fileType})`);
+      log.info(`Converting: ${path.basename(currentFilePath)} -> ${snowflakeFileName} (type: ${fileType})`);
       
       // Convert Oracle to Snowflake
-      console.log(`🔄 Calling LLM conversion for: ${snowflakeFileName}`);
+      log.info(`🔄 Calling LLM conversion for: ${snowflakeFileName}`);
       
       // Add timeout to prevent hanging - increased to 2 minutes for complex files
       const conversionPromise = oracleConversionService.convertOracleToSnowflake(oracleCode, path.basename(currentFilePath), fileType);
@@ -286,10 +290,10 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
       );
       
       const snowflakeCode = await Promise.race([conversionPromise, timeoutPromise]);
-      console.log(`✅ LLM conversion completed for: ${snowflakeFileName}`);
+      log.info(`✅ LLM conversion completed for: ${snowflakeFileName}`);
       
       // Create temporary converted folder structure and save files
-      const convertedPath = process.env.CONVERTED_PATH || './converted';
+      const convertedPath = config.paths.output || './converted';
       const snowflakeFilePath = path.join(convertedPath, snowflakeFileName);
       
       // Ensure the target folder exists
@@ -298,9 +302,9 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
       // Write the converted file to the temporary converted folder
       await fs.writeFile(snowflakeFilePath, snowflakeCode, 'utf8');
       
-      console.log(`💾 Created file: ${snowflakeFilePath}`);
-      console.log(`📁 File type: ${fileType}`);
-      console.log(`📁 Snowflake filename: ${snowflakeFileName}`);
+      log.info(`💾 Created file: ${snowflakeFilePath}`);
+      log.info(`📁 File type: ${fileType}`);
+      log.info(`📁 Snowflake filename: ${snowflakeFileName}`);
       
       convertedFiles.push({
         original: relativePath,
@@ -317,11 +321,10 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
         fileType: fileType
       });
       
-      console.log(`✅ Converted: ${path.basename(currentFilePath)} -> ${snowflakeFileName}`);
+      log.info(`✅ Converted: ${path.basename(currentFilePath)} -> ${snowflakeFileName}`);
       
     } catch (error) {
-      console.error(`❌ Error converting file ${currentFilePath}:`, error);
-      console.error(`  Error details: ${error.message}`);
+      log.error(`❌ Error converting file ${currentFilePath}`, { error: error.message, stack: error.stack });
       
       // Add failed file to results for tracking
       convertedFiles.push({
@@ -335,7 +338,7 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
       });
       
       // Continue with next file instead of failing completely
-      console.log(`⚠️ Continuing with next file...`);
+      log.warn(`⚠️ Continuing with next file...`);
     }
   }
   
@@ -353,17 +356,17 @@ async function convertOracleFilesWithProgress(extractedPath, analysis, jobId) {
     return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
   });
   
-  console.log(`📋 Converted files in response order:`);
+  log.info(`📋 Converted files in response order:`);
   convertedFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${file.original} -> ${file.converted}`);
+    log.info(`  ${index + 1}. ${file.original} -> ${file.converted}`);
   });
   
-  console.log(`📋 Snowflake files in zip order:`);
+  log.info(`📋 Snowflake files in zip order:`);
   snowflakeFiles.forEach((file, index) => {
-    console.log(`  ${index + 1}. ${file.name}`);
+    log.info(`  ${index + 1}. ${file.name}`);
   });
   
-  console.log(`Conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
+  log.info(`Conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
     convertedFiles,
@@ -382,32 +385,32 @@ const handleTestConversion = async (req, res) => {
   try {
     // Create progress tracking job
     const job = progressService.createJob(jobId);
-    console.log(`🚀 Starting test Oracle → Snowflake migration job: ${jobId}`);
+    log.info(`🚀 Starting test Oracle → Snowflake migration job: ${jobId}`);
     
     // Use the sample Oracle zip file we created
     const sampleOraclePath = path.join(__dirname, '..', 'sample-oracle-files.zip');
     
     // Check if sample file exists
     if (!await fs.pathExists(sampleOraclePath)) {
-      console.error('❌ Sample Oracle zip file not found at:', sampleOraclePath);
+      log.error('❌ Sample Oracle zip file not found', { path: sampleOraclePath });
       throw new Error('Sample Oracle zip file not found. Please ensure sample-oracle-files.zip exists in the project root.');
     }
     
-    console.log('📦 Using sample Oracle zip file:', sampleOraclePath);
+    log.info('📦 Using sample Oracle zip file: ' + sampleOraclePath);
     
     // Extract the zip file
-    console.log('📦 Extracting sample Oracle zip file...');
+    log.info('📦 Extracting sample Oracle zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
-    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
     
     // Use system unzip command for better reliability
     try {
       await execAsync(`unzip -q "${sampleOraclePath}" -d "${extractedPath}"`);
-      console.log('✅ Zip file extracted using system unzip');
+      log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
-      console.warn('⚠️ System unzip failed, falling back to unzipper library:', error.message);
+      log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
       
       // Fallback to unzipper library if system unzip fails
       await new Promise((resolve, reject) => {
@@ -422,17 +425,17 @@ const handleTestConversion = async (req, res) => {
       });
     }
     
-    console.log(`✅ Sample Oracle files ready at: ${extractedPath}`);
+    log.info(`✅ Sample Oracle files ready at: ${extractedPath}`);
     
     // Step 1: Analyze the Oracle project
-    console.log('🔍 Analyzing Oracle project...');
+    log.info('🔍 Analyzing Oracle project...');
     progressService.updateProgress(jobId, 0, 50, 'Analyzing Oracle project...');
     const analysis = await oracleFileAnalysisService.analyzeOracleProjectFromDirectory(extractedPath);
     progressService.updateProgress(jobId, 0, 100, 'Analysis complete');
-    console.log(`✅ Analysis complete: ${analysis.totalFiles} Oracle files found`);
+    log.info(`✅ Analysis complete: ${analysis.totalFiles} Oracle files found`);
     
     // Step 2: Convert Oracle to Snowflake
-    console.log('🔄 Starting Oracle → Snowflake conversion...');
+    log.info('🔄 Starting Oracle → Snowflake conversion...');
     progressService.updateProgress(jobId, 1, 10, 'Starting Oracle → Snowflake conversion...');
     
     // Debug: List all Oracle files found
@@ -442,19 +445,19 @@ const handleTestConversion = async (req, res) => {
       const nameB = path.basename(b);
       return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
     });
-    console.log(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
+    log.info(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
     sortedOracleFiles.forEach((file, index) => {
-      console.log(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
+      log.info(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
     });
     
     const conversionResult = await convertOracleFilesWithWorkers(extractedPath, analysis, jobId);
     progressService.updateProgress(jobId, 1, 100, 'Conversion complete');
-    console.log(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
+    log.info(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
     
     // Step 3: Create final ZIP with converted files
-    console.log('📦 Creating final package...');
+    log.info('📦 Creating final package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
     // Generate unique zip filename with timestamp and job ID
@@ -468,26 +471,26 @@ const handleTestConversion = async (req, res) => {
     
     // Verify the zip file was created
     if (await fs.pathExists(zipPath)) {
-      console.log(`✅ Zip file created successfully: ${zipPath}`);
+      log.info(`✅ Zip file created successfully: ${zipPath}`);
       const stats = await fs.stat(zipPath);
-      console.log(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(stats.size)}`);
+      log.info(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(stats.size)}`);
     } else {
-      console.error(`❌ Zip file was not created: ${zipPath}`);
+      log.error(`❌ Zip file was not created: ${zipPath}`);
     }
     
-    console.log(`🎉 Test Oracle → Snowflake migration completed successfully: ${zipFileName}`);
+    log.info(`🎉 Test Oracle → Snowflake migration completed successfully: ${zipFileName}`);
     
     // Get file size for logging
     const zipStats = await fs.stat(zipPath);
-    console.log(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(zipStats.size)}`);
-    console.log(`📦 Zip file ready for download via /api/download endpoint`);
+    log.info(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(zipStats.size)}`);
+    log.info(`📦 Zip file ready for download via /api/download endpoint`);
     
     // Clean up converted folder after zip creation
-    console.log('🧹 Cleaning up converted folder...');
-    const convertedPath = process.env.CONVERTED_PATH || './converted';
+    log.info('🧹 Cleaning up converted folder...');
+    const convertedPath = config.paths.output || './converted';
     if (await fs.pathExists(convertedPath)) {
       await fs.remove(convertedPath);
-      console.log('✅ Converted folder cleaned up');
+      log.info('✅ Converted folder cleaned up');
     }
     
     // Complete the job
@@ -520,7 +523,7 @@ const handleTestConversion = async (req, res) => {
     
     progressService.completeJob(jobId, result);
     
-    console.log(`📤 Sending test response for job: ${jobId}`);
+    log.info(`📤 Sending test response for job: ${jobId}`);
     
     // Return the result
     res.status(200).json({
@@ -532,7 +535,7 @@ const handleTestConversion = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Test Oracle → Snowflake migration failed:', error);
+    log.error('❌ Test Oracle → Snowflake migration failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
     res.status(500).json({ 
       error: 'Test Oracle → Snowflake migration failed', 
@@ -543,7 +546,7 @@ const handleTestConversion = async (req, res) => {
     // Clean up extracted directory
     if (extractedPath && await fs.pathExists(extractedPath)) {
       await fs.remove(extractedPath);
-      console.log('🧹 Cleaned up extracted directory');
+      log.info('🧹 Cleaned up extracted directory');
     }
   }
 };
@@ -558,7 +561,7 @@ const handleConvert = async (req, res) => {
     
     // Handle direct code input if provided
     if (sourceCode) {
-      console.log(`🔄 Processing direct code conversion request`);
+      log.info(`🔄 Processing direct code conversion request`);
       
       // Use the file name provided or default to input.sql
       const inputFileName = fileName || 'input.sql';
@@ -567,7 +570,7 @@ const handleConvert = async (req, res) => {
       const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, inputFileName);
 
       // Persist output artifacts per requested format (sql|json|docx|all)
-      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      const outputsRoot = config.paths.output;
       await fs.ensureDir(outputsRoot);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const base = inputFileName.endsWith('.sql') ? inputFileName.replace(/\.sql$/i, '') : inputFileName;
@@ -622,6 +625,11 @@ const handleConvert = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    try {
+      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
     
     // Create job ID based on zip base name
     const zipBaseName = path.basename(zipFilePath, path.extname(zipFilePath));
@@ -629,22 +637,22 @@ const handleConvert = async (req, res) => {
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
-    console.log(`🚀 Starting Oracle → Snowflake conversion job: ${jobId}`);
-    console.log(`📁 Processing zip file: ${zipFilePath}`);
+    log.info(`🚀 Starting Oracle → Snowflake conversion job: ${jobId}`);
+    log.info(`📁 Processing zip file: ${zipFilePath}`);
     
     // Extract the zip file
-    console.log('📦 Extracting zip file...');
+    log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
-    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
     
     // Use system unzip command for better reliability
     try {
       await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
-      console.log('✅ Zip file extracted using system unzip');
+      log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
-      console.warn('⚠️ System unzip failed, falling back to unzipper library:', error.message);
+      log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
       
       // Fallback to unzipper library if system unzip fails
       await new Promise((resolve, reject) => {
@@ -659,17 +667,17 @@ const handleConvert = async (req, res) => {
       });
     }
     
-    console.log(`✅ Zip file extracted to: ${extractedPath}`);
+    log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
     // Step 1: Analyze the Oracle project
-    console.log('🔍 Analyzing Oracle project...');
+    log.info('🔍 Analyzing Oracle project...');
     progressService.updateProgress(jobId, 0, 50, 'Analyzing Oracle project...');
     const analysis = await oracleFileAnalysisService.analyzeOracleProjectFromDirectory(extractedPath);
     progressService.updateProgress(jobId, 0, 100, 'Analysis complete');
-    console.log(`✅ Analysis complete: ${analysis.totalFiles} Oracle files found`);
+    log.info(`✅ Analysis complete: ${analysis.totalFiles} Oracle files found`);
     
     // Step 2: Convert Oracle to Snowflake
-    console.log('🔄 Starting Oracle → Snowflake conversion...');
+    log.info('🔄 Starting Oracle → Snowflake conversion...');
     progressService.updateProgress(jobId, 1, 10, 'Starting Oracle → Snowflake conversion...');
     
     // Debug: List all Oracle files found
@@ -679,19 +687,19 @@ const handleConvert = async (req, res) => {
       const nameB = path.basename(b);
       return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
     });
-    console.log(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
+    log.info(`🔍 Found ${sortedOracleFiles.length} Oracle files:`);
     sortedOracleFiles.forEach((file, index) => {
-      console.log(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
+      log.info(`  ${index + 1}. ${path.relative(extractedPath, file)}`);
     });
     
     const conversionResult = await convertOracleFilesWithWorkers(extractedPath, analysis, jobId);
     progressService.updateProgress(jobId, 1, 100, 'Conversion complete');
-    console.log(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
+    log.info(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
     
     // Step 3: Create final ZIP with converted files
-    console.log('📦 Creating final package...');
+    log.info('📦 Creating final package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
     // Generate unique zip filename with timestamp and job ID
@@ -705,27 +713,27 @@ const handleConvert = async (req, res) => {
     
     // Verify the zip file was created
     if (await fs.pathExists(zipPath)) {
-      console.log(`✅ Zip file created successfully: ${zipPath}`);
+      log.info(`✅ Zip file created successfully: ${zipPath}`);
       const stats = await fs.stat(zipPath);
-      console.log(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(stats.size)}`);
+      log.info(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(stats.size)}`);
     } else {
-      console.error(`❌ Zip file was not created: ${zipPath}`);
+      log.error(`❌ Zip file was not created: ${zipPath}`);
       throw new Error('Failed to create zip file');
     }
     
-    console.log(`🎉 Oracle → Snowflake conversion completed successfully: ${zipFileName}`);
+    log.info(`🎉 Oracle → Snowflake conversion completed successfully: ${zipFileName}`);
     
     // Get file size for logging
     const zipStats = await fs.stat(zipPath);
-    console.log(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(zipStats.size)}`);
-    console.log(`📦 Zip file ready for download via /api/download endpoint`);
+    log.info(`📊 Zip file size: ${oracleFileAnalysisService.formatFileSize(zipStats.size)}`);
+    log.info(`📦 Zip file ready for download via /api/download endpoint`);
     
     // Clean up converted folder after zip creation
-    console.log('🧹 Cleaning up converted folder...');
-    const convertedPath = process.env.CONVERTED_PATH || './converted';
+    log.info('🧹 Cleaning up converted folder...');
+    const convertedPath = config.paths.output || './converted';
     if (await fs.pathExists(convertedPath)) {
       await fs.remove(convertedPath);
-      console.log('✅ Converted folder cleaned up');
+      log.info('✅ Converted folder cleaned up');
     }
     
     // Complete the job
@@ -758,7 +766,7 @@ const handleConvert = async (req, res) => {
     
     progressService.completeJob(jobId, result);
     
-    console.log(`📤 Sending response for job: ${jobId}`);
+    log.info(`📤 Sending response for job: ${jobId}`);
     
     // Return the result
     res.status(200).json({
@@ -770,7 +778,7 @@ const handleConvert = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Oracle → Snowflake conversion failed:', error);
+    log.error('❌ Oracle → Snowflake conversion failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
     
     res.status(500).json({ 
@@ -782,7 +790,7 @@ const handleConvert = async (req, res) => {
     // Clean up extracted directory
     if (extractedPath && await fs.pathExists(extractedPath)) {
       await fs.remove(extractedPath);
-      console.log('🧹 Cleaned up extracted directory');
+      log.info('🧹 Cleaned up extracted directory');
     }
   }
 };
@@ -836,7 +844,7 @@ const getProgress = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error getting progress:', error);
+    log.error('Error getting progress', { error: error.message });
     res.status(500).json({ 
       error: 'Error getting progress', 
       details: error.message 
@@ -852,9 +860,9 @@ const serveZipFile = async (req, res) => {
     // If filePath is provided, allow downloading files generated under known output roots
     if (filePath) {
       const allowedRoots = [
-        path.resolve(process.env.ZIPS_PATH || './zips'),
-        path.resolve(process.env.OUTPUT_PATH || './output'),
-        path.resolve(process.env.IDMC_PATH || './idmc_output')
+        path.resolve(config.paths.zips),
+        path.resolve(config.paths.output),
+        path.resolve(config.paths.idmc || './idmc_output')
       ];
       const resolved = path.resolve(filePath);
       const isAllowed = allowedRoots.some(root => resolved.startsWith(root + path.sep) || resolved === root);
@@ -879,7 +887,7 @@ const serveZipFile = async (req, res) => {
       });
     }
 
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     const zipPath = path.join(zipsPath, filename);
     
     // Check if file exists
@@ -900,7 +908,7 @@ const serveZipFile = async (req, res) => {
       });
     }
     
-    console.log(`📥 Serving converted zip file: ${filename} (${oracleFileAnalysisService.formatFileSize(stats.size)})`);
+    log.info(`📥 Serving converted zip file: ${filename} (${oracleFileAnalysisService.formatFileSize(stats.size)})`);
     
     // Set appropriate headers for file download
     res.setHeader('Content-Type', 'application/zip');
@@ -912,14 +920,14 @@ const serveZipFile = async (req, res) => {
     fileStream.pipe(res);
     
     fileStream.on('error', (error) => {
-      console.error('Error streaming zip file:', error);
+      log.error('Error streaming zip file', { error: error.message });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Error streaming file' });
       }
     });
     
   } catch (error) {
-    console.error('Error serving zip file:', error);
+    log.error('Error serving zip file', { error: error.message });
     res.status(500).json({ 
       error: 'Error serving zip file', 
       details: error.message 
@@ -931,7 +939,7 @@ const serveZipFile = async (req, res) => {
 const handleDirectCodeConversion = async (req, res) => {
   try {
     const { sourceCode, fileName = 'input.sql', conversionType = 'oracle-to-snowflake' } = req.body;
-    console.log(`🔄 Processing direct code conversion request for type: ${conversionType}`);
+    log.info(`🔄 Processing direct code conversion request for type: ${conversionType}`);
     
     let convertedCode = '';
     let mappingSummary = null;
@@ -952,7 +960,7 @@ const handleDirectCodeConversion = async (req, res) => {
     
     // For Snowflake single-file conversions, also persist a .sql output
     if (conversionType === 'oracle-to-snowflake') {
-      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      const outputsRoot = config.paths.output;
       await fs.ensureDir(outputsRoot);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const base = fileName.endsWith('.sql') ? fileName.replace(/\.sql$/i, '') : fileName;
@@ -979,7 +987,7 @@ const handleDirectCodeConversion = async (req, res) => {
       convertedContent: mappingSummary
     });
   } catch (error) {
-    console.error('❌ Error in direct code conversion:', error);
+    log.error('❌ Error in direct code conversion', { error: error.message, stack: error.stack });
     return res.status(500).json({
       success: false,
       error: error.message || 'An error occurred during code conversion'
@@ -1085,7 +1093,7 @@ async function convertIDMCFilesWithWorkers(extractedPath, files, jobId) {
       await fs.ensureDir(path.dirname(outPath));
       await fs.writeFile(outPath, r.idmcContent, 'utf8');
       idmcFiles.push({ name: r.converted, content: r.idmcContent, fileType: r.detectedType });
-      convertedFiles.push({ original: r.original, converted: r.converted, idmcContent: r.idmcContent, detectedType: r.detectedType, success: true });
+      convertedFiles.push({ original: r.original, converted: r.converted, idmcContent: r.idmcContent, detectedType: r.detectedType, originalContent: r.originalContent, success: true });
     } else {
       convertedFiles.push({ original: null, converted: null, idmcContent: null, detectedType: null, success: false, error: r.error });
     }
@@ -1237,6 +1245,7 @@ const handleUnifiedConvert = async (req, res) => {
         conversionType: `${resolvedType}-to-idmc`,
         fileName: name,
         jsonContent: idmcSummary,
+        originalContent: sourceCode,
         jobId: jobIdSingle,
         outputFiles
       });

@@ -9,16 +9,20 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const archiver = require('archiver');
 const { Worker } = require('worker_threads');
+const config = require('../config');
+const { assertPathUnder } = require('../utils/pathUtils');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('controllers/idmcConversionController');
 
 // Helper function to get file size
 async function getFileSize(filePath) {
   try {
     const stats = await fs.stat(filePath);
     const size = (stats.size / 1024).toFixed(2) + ' KB';
-    console.log(`📊 File size: ${size} for ${filePath}`);
+    log.info(`📊 File size: ${size} for ${filePath}`);
     return size;
   } catch (error) {
-    console.error(`❌ Error getting file size for ${filePath}:`, error);
+    log.error(`❌ Error getting file size for ${filePath}`, { error: error.message });
     return 'Unknown';
   }
 }
@@ -37,10 +41,10 @@ async function convertOracleFilesToIDMC(extractedPath, jobId) {
   });
   const totalFiles = sortedOracleFiles.length;
   
-  console.log(`Found ${totalFiles} Oracle files to convert to IDMC summaries`);
+  log.info(`Found ${totalFiles} Oracle files to convert to IDMC summaries`);
   
   if (totalFiles === 0) {
-    console.log('⚠️ No Oracle files found to convert');
+    log.warn('⚠️ No Oracle files found to convert');
     return {
       convertedFiles: [],
       idmcFiles: [],
@@ -53,7 +57,7 @@ async function convertOracleFilesToIDMC(extractedPath, jobId) {
   for (let i = 0; i < totalFiles; i++) {
     const currentFilePath = sortedOracleFiles[i];
     try {
-      console.log(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
+      log.info(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
       
       // Update progress
       const stepProgress = Math.round(((i + 1) / totalFiles) * 90);
@@ -64,18 +68,18 @@ async function convertOracleFilesToIDMC(extractedPath, jobId) {
       const fileType = await idmcConversionService.analyzeFileType(currentFilePath);
       const idmcFileName = idmcConversionService.getIDMCFileName(relativePath, fileType);
       
-      console.log(`Converting: ${path.basename(currentFilePath)} -> ${idmcFileName} (type: ${fileType})`);
+      log.info(`Converting: ${path.basename(currentFilePath)} -> ${idmcFileName} (type: ${fileType})`);
       
       // Convert Oracle to IDMC
       const idmcSummary = await idmcConversionService.convertOracleToIDMC(oracleCode, path.basename(currentFilePath), fileType);
       
       // Create IDMC output directory
-      const idmcPath = process.env.IDMC_PATH || './idmc_output';
+      const idmcPath = config.paths.idmc || path.resolve('./idmc_output');
       const idmcFilePath = path.join(idmcPath, idmcFileName);
       await fs.ensureDir(path.dirname(idmcFilePath));
       await fs.writeFile(idmcFilePath, idmcSummary, 'utf8');
       
-      console.log(`💾 Created IDMC file: ${idmcFilePath}`);
+      log.info(`💾 Created IDMC file: ${idmcFilePath}`);
       
       convertedFiles.push({
         original: relativePath,
@@ -92,10 +96,10 @@ async function convertOracleFilesToIDMC(extractedPath, jobId) {
         fileType: fileType
       });
       
-      console.log(`✅ Converted: ${path.basename(currentFilePath)} -> ${idmcFileName}`);
+      log.info(`✅ Converted: ${path.basename(currentFilePath)} -> ${idmcFileName}`);
       
     } catch (error) {
-      console.error(`❌ Error converting file ${currentFilePath}:`, error);
+      log.error(`❌ Error converting file ${currentFilePath}`, { error: error.message, stack: error.stack });
       
       convertedFiles.push({
         original: path.relative(extractedPath, currentFilePath),
@@ -107,11 +111,11 @@ async function convertOracleFilesToIDMC(extractedPath, jobId) {
         error: error.message
       });
       
-      console.log(`⚠️ Continuing with next file...`);
+      log.warn(`⚠️ Continuing with next file...`);
     }
   }
   
-  console.log(`Oracle to IDMC conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
+  log.info(`Oracle to IDMC conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
     convertedFiles,
@@ -136,10 +140,10 @@ async function convertRedshiftFilesToIDMC(extractedPath, jobId) {
   });
   const totalFiles = sortedRedshiftFiles.length;
   
-  console.log(`Found ${totalFiles} Redshift files to convert to IDMC summaries`);
+  log.info(`Found ${totalFiles} Redshift files to convert to IDMC summaries`);
   
   if (totalFiles === 0) {
-    console.log('⚠️ No Redshift files found to convert');
+    log.warn('⚠️ No Redshift files found to convert');
     return {
       convertedFiles: [],
       idmcFiles: [],
@@ -152,7 +156,7 @@ async function convertRedshiftFilesToIDMC(extractedPath, jobId) {
   for (let i = 0; i < totalFiles; i++) {
     const currentFilePath = sortedRedshiftFiles[i];
     try {
-      console.log(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
+      log.info(`Processing file ${i + 1}/${totalFiles}: ${path.basename(currentFilePath)}`);
       
       // Update progress
       const stepProgress = Math.round(((i + 1) / totalFiles) * 90);
@@ -163,18 +167,18 @@ async function convertRedshiftFilesToIDMC(extractedPath, jobId) {
       const fileType = await idmcConversionService.analyzeFileType(currentFilePath);
       const idmcFileName = idmcConversionService.getIDMCFileName(relativePath, fileType);
       
-      console.log(`Converting: ${path.basename(currentFilePath)} -> ${idmcFileName} (type: ${fileType})`);
+      log.info(`Converting: ${path.basename(currentFilePath)} -> ${idmcFileName} (type: ${fileType})`);
       
       // Convert Redshift to IDMC
       const idmcSummary = await idmcConversionService.convertRedshiftToIDMC(redshiftCode, path.basename(currentFilePath), fileType);
       
       // Create IDMC output directory
-      const idmcPath = process.env.IDMC_PATH || './idmc_output';
+      const idmcPath = config.paths.idmc || path.resolve('./idmc_output');
       const idmcFilePath = path.join(idmcPath, idmcFileName);
       await fs.ensureDir(path.dirname(idmcFilePath));
       await fs.writeFile(idmcFilePath, idmcSummary, 'utf8');
       
-      console.log(`💾 Created IDMC file: ${idmcFilePath}`);
+      log.info(`💾 Created IDMC file: ${idmcFilePath}`);
       
       convertedFiles.push({
         original: relativePath,
@@ -191,10 +195,10 @@ async function convertRedshiftFilesToIDMC(extractedPath, jobId) {
         fileType: fileType
       });
       
-      console.log(`✅ Converted: ${path.basename(currentFilePath)} -> ${idmcFileName}`);
+      log.info(`✅ Converted: ${path.basename(currentFilePath)} -> ${idmcFileName}`);
       
     } catch (error) {
-      console.error(`❌ Error converting file ${currentFilePath}:`, error);
+      log.error(`❌ Error converting file ${currentFilePath}`, { error: error.message, stack: error.stack });
       
       convertedFiles.push({
         original: path.relative(extractedPath, currentFilePath),
@@ -206,11 +210,11 @@ async function convertRedshiftFilesToIDMC(extractedPath, jobId) {
         error: error.message
       });
       
-      console.log(`⚠️ Continuing with next file...`);
+      log.warn(`⚠️ Continuing with next file...`);
     }
   }
   
-  console.log(`Redshift to IDMC conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
+  log.info(`Redshift to IDMC conversion completed: ${convertedFiles.filter(f => f.success).length}/${totalFiles} files converted successfully`);
   
   return {
     convertedFiles,
@@ -281,7 +285,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
     
     // Handle direct code input if provided
     if (sourceCode) {
-      console.log(`🔄 Processing direct Oracle code to IDMC conversion`);
+      log.info(`🔄 Processing direct Oracle code to IDMC conversion`);
       
       // Use the file name provided or default to input.sql
       const inputFileName = fileName || 'input.sql';
@@ -290,7 +294,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
       const idmcSummary = await idmcConversionService.convertOracleCodeToIdmc(sourceCode, inputFileName);
       
       // Persist artifacts based on requested outputFormat (supports 'sql' to save original)
-      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      const outputsRoot = config.paths.output;
       await fs.ensureDir(outputsRoot);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const base = inputFileName.replace(/\.[^.]+$/g, '');
@@ -328,6 +332,11 @@ const handleConvertOracleToIDMC = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    try {
+      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
     
     // Create job ID
     const baseZipName = path.basename(zipFilePath, path.extname(zipFilePath));
@@ -335,21 +344,21 @@ const handleConvertOracleToIDMC = async (req, res) => {
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
-    console.log(`🚀 Starting Oracle → IDMC conversion job: ${jobId}`);
+    log.info(`🚀 Starting Oracle → IDMC conversion job: ${jobId}`);
     
     // Extract the zip file
-    console.log('📦 Extracting zip file...');
+    log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
-    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
     
     // Use system unzip command
     try {
       await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
-      console.log('✅ Zip file extracted using system unzip');
+      log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
-      console.warn('⚠️ System unzip failed, falling back to unzipper library:', error.message);
+      log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
       
       await new Promise((resolve, reject) => {
         const extract = unzipper.Extract({ path: extractedPath });
@@ -363,20 +372,20 @@ const handleConvertOracleToIDMC = async (req, res) => {
       });
     }
     
-    console.log(`✅ Zip file extracted to: ${extractedPath}`);
+    log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
     // Convert Oracle to IDMC
-    console.log('🔄 Starting Oracle → IDMC conversion...');
+    log.info('🔄 Starting Oracle → IDMC conversion...');
     progressService.updateProgress(jobId, 1, 10, 'Starting Oracle → IDMC conversion...');
     
     const conversionResult = await convertOracleFilesToIDMC(extractedPath, jobId);
     progressService.updateProgress(jobId, 1, 100, 'Conversion complete');
-    console.log(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
+    log.info(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
     
     // Create final ZIP with IDMC files
-    console.log('📦 Creating final IDMC package...');
+    log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -410,7 +419,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Oracle → IDMC conversion failed:', error);
+    log.error('❌ Oracle → IDMC conversion failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
     
     res.status(500).json({ 
@@ -422,7 +431,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
     // Clean up extracted directory
     if (extractedPath && await fs.pathExists(extractedPath)) {
       await fs.remove(extractedPath);
-      console.log('🧹 Cleaned up extracted directory');
+      log.info('🧹 Cleaned up extracted directory');
     }
   }
 };
@@ -437,7 +446,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
     
     // Handle direct code input if provided
     if (sourceCode) {
-      console.log(`🔄 Processing direct Redshift code to IDMC conversion`);
+      log.info(`🔄 Processing direct Redshift code to IDMC conversion`);
       
       // Use the file name provided or default to input.sql
       const inputFileName = fileName || 'input.sql';
@@ -445,7 +454,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       // Convert the code directly
       const idmcSummary = await idmcConversionService.convertRedshiftCodeToIdmc(sourceCode, inputFileName);
       
-      const outputsRoot = process.env.OUTPUT_PATH || './output';
+      const outputsRoot = config.paths.output;
       await fs.ensureDir(outputsRoot);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const base = inputFileName.replace(/\.[^.]+$/g, '');
@@ -483,6 +492,11 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    try {
+      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
     
     // Create job ID
     const baseZipName = path.basename(zipFilePath, path.extname(zipFilePath));
@@ -490,21 +504,21 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
-    console.log(`🚀 Starting Redshift → IDMC conversion job: ${jobId}`);
+    log.info(`🚀 Starting Redshift → IDMC conversion job: ${jobId}`);
     
     // Extract the zip file
-    console.log('📦 Extracting zip file...');
+    log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
-    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
     
     // Use system unzip command
     try {
       await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
-      console.log('✅ Zip file extracted using system unzip');
+      log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
-      console.warn('⚠️ System unzip failed, falling back to unzipper library:', error.message);
+      log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
       
       await new Promise((resolve, reject) => {
         const extract = unzipper.Extract({ path: extractedPath });
@@ -518,20 +532,20 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       });
     }
     
-    console.log(`✅ Zip file extracted to: ${extractedPath}`);
+    log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
     // Convert Redshift to IDMC
-    console.log('🔄 Starting Redshift → IDMC conversion...');
+    log.info('🔄 Starting Redshift → IDMC conversion...');
     progressService.updateProgress(jobId, 1, 10, 'Starting Redshift → IDMC conversion...');
     
     const conversionResult = await convertRedshiftFilesToIDMC(extractedPath, jobId);
     progressService.updateProgress(jobId, 1, 100, 'Conversion complete');
-    console.log(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
+    log.info(`✅ Conversion complete: ${conversionResult.totalConverted}/${conversionResult.totalFiles} files converted`);
     
     // Create final ZIP with IDMC files
-    console.log('📦 Creating final IDMC package...');
+    log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -565,7 +579,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Redshift → IDMC conversion failed:', error);
+    log.error('❌ Redshift → IDMC conversion failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
     
     res.status(500).json({ 
@@ -577,7 +591,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
     // Clean up extracted directory
     if (extractedPath && await fs.pathExists(extractedPath)) {
       await fs.remove(extractedPath);
-      console.log('🧹 Cleaned up extracted directory');
+      log.info('🧹 Cleaned up extracted directory');
     }
   }
 };
@@ -601,7 +615,7 @@ const handleConvertSingleScriptToIDMC = async (req, res) => {
     const jobId = `single_script_${Date.now()}`;
     const job = progressService.createJob(jobId);
     
-    console.log(`🚀 Starting single script → IDMC conversion: ${fileName}`);
+    log.info(`🚀 Starting single script → IDMC conversion: ${fileName}`);
     progressService.updateProgress(jobId, 0, 50, 'Converting script to IDMC...');
     
     let idmcSummary;
@@ -634,7 +648,7 @@ const handleConvertSingleScriptToIDMC = async (req, res) => {
     res.status(200).json(result);
     
   } catch (error) {
-    console.error('❌ Single script → IDMC conversion failed:', error);
+    log.error('❌ Single script → IDMC conversion failed', { error: error.message, stack: error.stack });
     res.status(500).json({ 
       error: 'Single script → IDMC conversion failed', 
       details: error.message
@@ -649,12 +663,12 @@ async function createIDMCZipFile(idmcFiles, zipPath) {
     const archive = archiver('zip', { zlib: { level: 9 } });
     
     output.on('close', () => {
-      console.log(`📦 IDMC Zip file created: ${archive.pointer()} bytes`);
+      log.info(`📦 IDMC Zip file created: ${archive.pointer()} bytes`);
       resolve();
     });
     
     archive.on('error', (err) => {
-      console.error('❌ Error creating IDMC zip file:', err);
+      log.error('❌ Error creating IDMC zip file', { error: err.message });
       reject(err);
     });
     
@@ -753,20 +767,20 @@ const handleConvertAutoToIDMC = async (req, res) => {
           ? await idmcConversionService.convertRedshiftToIDMC(code, path.basename(f), 'sql')
           : await idmcConversionService.convertOracleToIDMC(code, path.basename(f), 'sql');
         const outName = idmcConversionService.getIDMCFileName(path.relative(extractedPath, f), 'sql');
-        const idmcPath = process.env.IDMC_PATH || './idmc_output';
+      const idmcPath = config.paths.idmc || path.resolve('./idmc_output');
         const outPath = path.join(idmcPath, outName);
         await fs.ensureDir(path.dirname(outPath));
         await fs.writeFile(outPath, idmcSummary, 'utf8');
 
         idmcFiles.push({ name: outName, content: idmcSummary, fileType: detected });
-        convertedFiles.push({ original: path.relative(extractedPath, f), converted: outName, idmcContent: idmcSummary, detectedType: detected, success: true });
+        convertedFiles.push({ original: path.relative(extractedPath, f), converted: outName, idmcContent: idmcSummary, detectedType: detected, originalContent: code, success: true });
       } catch (error) {
         convertedFiles.push({ original: path.relative(extractedPath, f), converted: null, idmcContent: null, detectedType: null, success: false, error: error.message });
       }
     }
 
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `auto_idmc_summaries_${timestamp}.zip`;

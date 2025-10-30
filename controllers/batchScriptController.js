@@ -7,6 +7,10 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const archiver = require('archiver');
+const config = require('../config');
+const { assertPathUnder } = require('../utils/pathUtils');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('controllers/batchScriptController');
 
 // Process batch scripts and convert to IDMC summaries
 const handleProcessBatchScripts = async (req, res) => {
@@ -33,6 +37,12 @@ const handleProcessBatchScripts = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    // Ensure provided zip path is under allowed roots (uploads or zips)
+    try {
+      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
     
     // Create job ID
     const fileName = path.basename(zipFilePath, path.extname(zipFilePath));
@@ -40,21 +50,21 @@ const handleProcessBatchScripts = async (req, res) => {
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
-    console.log(`🚀 Starting batch script processing job: ${jobId}`);
+    log.info(`🚀 Starting batch script processing job: ${jobId}`);
     
     // Extract the zip file
-    console.log('📦 Extracting zip file...');
+    log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
-    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
     
     // Use system unzip command
     try {
       await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
-      console.log('✅ Zip file extracted using system unzip');
+      log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
-      console.warn('⚠️ System unzip failed, falling back to unzipper library:', error.message);
+      log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
       
       await new Promise((resolve, reject) => {
         const extract = unzipper.Extract({ path: extractedPath });
@@ -68,20 +78,20 @@ const handleProcessBatchScripts = async (req, res) => {
       });
     }
     
-    console.log(`✅ Zip file extracted to: ${extractedPath}`);
+    log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
     // Process batch scripts
-    console.log('🔄 Processing batch scripts...');
+    log.info('🔄 Processing batch scripts...');
     progressService.updateProgress(jobId, 1, 10, 'Processing batch scripts...');
     
     const processingResult = await batchScriptService.processBatchScriptDirectory(extractedPath);
     progressService.updateProgress(jobId, 1, 100, 'Batch script processing complete');
-    console.log(`✅ Processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
+    log.info(`✅ Processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
     
     // Create final ZIP with IDMC summaries
-    console.log('📦 Creating final IDMC package...');
+    log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = process.env.ZIPS_PATH || './zips';
+    const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -118,7 +128,7 @@ const handleProcessBatchScripts = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Batch script processing failed:', error);
+    log.error('❌ Batch script processing failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
     
     res.status(500).json({ 
@@ -130,7 +140,7 @@ const handleProcessBatchScripts = async (req, res) => {
     // Clean up extracted directory
     if (extractedPath && await fs.pathExists(extractedPath)) {
       await fs.remove(extractedPath);
-      console.log('🧹 Cleaned up extracted directory');
+      log.info('🧹 Cleaned up extracted directory');
     }
   }
 };
@@ -148,7 +158,7 @@ const handleProcessSingleBatchScript = async (req, res) => {
     
     // Handle file path if provided instead of direct code
     if (filePath && !batchScript) {
-      console.log(`🔄 Processing batch script from file: ${filePath}`);
+      log.info(`🔄 Processing batch script from file: ${filePath}`);
       
       // Check if file exists
       if (!await fs.pathExists(filePath)) {
@@ -156,6 +166,12 @@ const handleProcessSingleBatchScript = async (req, res) => {
           error: `File not found: ${filePath}`,
           success: false
         });
+      }
+      // Ensure provided path is under allowed roots
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output, config.paths.zips], filePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ success: false, error: e.message });
       }
       
       // Read the batch script file
@@ -177,7 +193,7 @@ const handleProcessSingleBatchScript = async (req, res) => {
     const jobId = `single_batch_${Date.now()}`;
     const job = progressService.createJob(jobId);
     
-    console.log(`🚀 Starting single batch script processing: ${actualFileName}`);
+    log.info(`🚀 Starting single batch script processing: ${actualFileName}`);
     progressService.updateProgress(jobId, 0, 50, 'Processing batch script...');
     
     // Process the batch script content directly (no temp file needed)
@@ -186,7 +202,7 @@ const handleProcessSingleBatchScript = async (req, res) => {
     progressService.updateProgress(jobId, 0, 100, 'Processing complete');
     
     // Persist IDMC summaries if present according to outputType
-    const outputsRoot = process.env.OUTPUT_PATH || './output';
+    const outputsRoot = config.paths.output;
     await fs.ensureDir(outputsRoot);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const outputFiles = [];
@@ -231,7 +247,7 @@ const handleProcessSingleBatchScript = async (req, res) => {
     res.status(200).json(response);
     
   } catch (error) {
-    console.error('❌ Single batch script processing failed:', error);
+    log.error('❌ Single batch script processing failed', { error: error.message, stack: error.stack });
     res.status(500).json({ 
       error: 'Single batch script processing failed', 
       details: error.message
@@ -253,6 +269,11 @@ const handleSummarizeBatchScript = async (req, res) => {
       if (!await fs.pathExists(filePath)) {
         return res.status(404).json({ success: false, error: `File not found: ${filePath}` });
       }
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output, config.paths.zips], filePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ success: false, error: e.message });
+      }
       batchScript = await fs.readFile(filePath, 'utf8');
       actualFileName = actualFileName || path.basename(filePath);
     }
@@ -268,7 +289,7 @@ const handleSummarizeBatchScript = async (req, res) => {
     const markdown = batchScriptService.summarizeBatchScriptContent(batchScript, actualFileName);
 
     // Persist a .md artifact for download convenience
-    const outputsRoot = process.env.OUTPUT_PATH || './output';
+    const outputsRoot = config.paths.output;
     await fs.ensureDir(outputsRoot);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const base = actualFileName.replace(/\.[^.]+$/g, '');

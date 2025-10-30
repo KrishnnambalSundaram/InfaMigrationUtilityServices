@@ -97,7 +97,7 @@ const sendErrorProd = (err, res) => {
   }
 };
 
-// Main error handling middleware - always show detailed errors for internal app
+// Main error handling middleware - always detailed (internal tool)
 const errorHandler = (err, req, res, next) => {
   err.statusCode = err.statusCode || 500;
   err.status = err.status || 'error';
@@ -111,7 +111,6 @@ const errorHandler = (err, req, res, next) => {
     stack: err.stack
   });
 
-  // Always show detailed errors for internal app
   let error = { ...err };
   error.message = err.message;
 
@@ -122,14 +121,8 @@ const errorHandler = (err, req, res, next) => {
   if (error.name === 'JsonWebTokenError') error = handleJWTError();
   if (error.name === 'TokenExpiredError') error = handleJWTExpiredError();
 
-  // Send detailed error response for internal app
-  res.status(error.statusCode).json({
-    success: false,
-    error: error,
-    message: error.message,
-    stack: error.stack,
-    ...(error.errors && { errors: error.errors })
-  });
+  // Always return detailed errors for internal use
+  return sendErrorDev(error, res);
 };
 
 // Async error wrapper

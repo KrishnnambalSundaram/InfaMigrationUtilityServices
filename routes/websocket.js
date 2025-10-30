@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const websocket = require('../websocket');
 const { validateWebSocketNotification } = require('../middleware/validation');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('routes/websocket');
 
 // Get WebSocket statistics
 router.get('/stats', (req, res) => {
@@ -17,7 +19,7 @@ router.get('/stats', (req, res) => {
       stats: stats
     });
   } catch (error) {
-    console.error('Error getting WebSocket stats:', error);
+    log.error('Error getting WebSocket stats', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: 'Error getting WebSocket statistics',
@@ -39,7 +41,7 @@ router.get('/room/:roomId/clients', (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error getting room clients:', error);
+    log.error('Error getting room clients', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: 'Error getting room clients',
@@ -61,7 +63,7 @@ router.post('/notify', validateWebSocketNotification, (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error sending notification:', error);
+    log.error('Error sending notification', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: 'Error sending notification',
@@ -81,7 +83,7 @@ router.get('/test', (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error testing WebSocket:', error);
+    log.error('Error testing WebSocket', { error: error.message, stack: error.stack });
     res.status(500).json({
       success: false,
       error: 'Error testing WebSocket',

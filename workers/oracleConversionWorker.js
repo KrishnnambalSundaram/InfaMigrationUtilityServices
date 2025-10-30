@@ -2,6 +2,8 @@ const { parentPort, workerData } = require('worker_threads');
 const fs = require('fs-extra');
 const path = require('path');
 const OpenAI = require('openai');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('workers/oracleConversionWorker');
 
 class OracleConversionWorker {
   constructor() {
@@ -299,7 +301,7 @@ ${oracleCode}`;
       
       return cleanedCode;
     } catch (error) {
-      console.error('Error converting Oracle to Snowflake:', error);
+      log.error('Error converting Oracle to Snowflake', { error: error.message, stack: error.stack });
       throw error;
     }
   }
@@ -386,11 +388,11 @@ ${oracleCode}`;
   }
 
   fixJavaScriptSyntax(code) {
-    console.log('🔧 Starting comprehensive syntax cleanup...');
+    log.info('🔧 Starting comprehensive syntax cleanup...');
     
     // If the code is completely malformed, try to reconstruct it
     if (this.isCodeCompletelyMalformed(code)) {
-      console.log('⚠️ Code is completely malformed, attempting reconstruction...');
+      log.warn('⚠️ Code is completely malformed, attempting reconstruction...');
       return this.reconstructMalformedCode(code);
     }
     
@@ -408,7 +410,7 @@ ${oracleCode}`;
     // Step 4: Final validation
     fixed = this.validateAndFixBrackets(fixed);
     
-    console.log('✅ Comprehensive syntax cleanup completed');
+    log.info('✅ Comprehensive syntax cleanup completed');
     return fixed;
   }
 
@@ -423,7 +425,7 @@ ${oracleCode}`;
   }
 
   reconstructMalformedCode(code) {
-    console.log('🔧 Reconstructing malformed code...');
+    log.info('🔧 Reconstructing malformed code...');
     
     // Extract procedure names
     const procedureMatches = code.match(/CREATE OR REPLACE PROCEDURE\s+(\w+)/g);
@@ -496,7 +498,7 @@ $$;
   }
 
   fixJavaScriptSyntax(code) {
-    console.log('🔧 Starting minimal syntax fixing...');
+    log.info('🔧 Starting minimal syntax fixing...');
     
     let fixed = code;
     
@@ -507,7 +509,7 @@ $$;
     // 2. Count backticks to detect unclosed template literals
     const backtickCount = (fixed.match(/`/g) || []).length;
     if (backtickCount % 2 !== 0) {
-      console.warn('⚠️ Detected unclosed template literal, attempting to fix...');
+      log.warn('⚠️ Detected unclosed template literal, attempting to fix...');
       // Add closing backtick if missing
       fixed += '`';
     }
@@ -521,7 +523,7 @@ $$;
     fixed = fixed.replace(/CREATE SEQUENCE\s+(\w+)\s*$/gm, 'CREATE SEQUENCE $1\n    START WITH 1\n    INCREMENT BY 1;');
     fixed = fixed.replace(/CREATE OR REPLACE VIEW\s+(\w+)\s+AS\s*$/gm, 'CREATE OR REPLACE VIEW $1 AS\nSELECT * FROM table_name;');
     
-    console.log('✅ Minimal syntax fixing completed');
+    log.info('✅ Minimal syntax fixing completed');
     return fixed;
   }
 
@@ -535,25 +537,25 @@ $$;
     const braceCloseCount = (fixed.match(/\}/g) || []).length;
     const dollarCount = (fixed.match(/\$\$/g) || []).length;
     
-    console.log(`🔍 Bracket validation: () ${parenCount}/${parenCloseCount}, {} ${braceCount}/${braceCloseCount}, $$ ${dollarCount}`);
+    log.info(`🔍 Bracket validation: () ${parenCount}/${parenCloseCount}, {} ${braceCount}/${braceCloseCount}, $$ ${dollarCount}`);
     
     // Fix missing closing parentheses
     if (parenCount > parenCloseCount) {
       const missing = parenCount - parenCloseCount;
-      console.log(`⚠️ Adding ${missing} missing closing parentheses`);
+      log.warn(`⚠️ Adding ${missing} missing closing parentheses`);
       fixed += ')'.repeat(missing);
     }
     
     // Fix missing closing braces
     if (braceCount > braceCloseCount) {
       const missing = braceCount - braceCloseCount;
-      console.log(`⚠️ Adding ${missing} missing closing braces`);
+      log.warn(`⚠️ Adding ${missing} missing closing braces`);
       fixed += '}'.repeat(missing);
     }
     
     // Fix missing closing $$ (should be even number)
     if (dollarCount % 2 !== 0) {
-      console.log(`⚠️ Adding missing closing $$`);
+      log.warn(`⚠️ Adding missing closing $$`);
       fixed += '$$';
     }
     
@@ -614,14 +616,14 @@ $$;
     const { filePath, extractedPath, convertedPath } = fileData;
     
     try {
-      console.log(`Worker processing Oracle file: ${path.basename(filePath)}`);
+      log.info(`Worker processing Oracle file: ${path.basename(filePath)}`);
       
       const oracleCode = await fs.readFile(filePath, 'utf8');
       const relativePath = path.relative(extractedPath, filePath);
       const fileType = await this.analyzeFileType(filePath);
       const snowflakeFileName = this.getSnowflakeFileName(relativePath, fileType);
       
-      console.log(`Worker converting: ${path.basename(filePath)} -> ${snowflakeFileName} (type: ${fileType})`);
+      log.info(`Worker converting: ${path.basename(filePath)} -> ${snowflakeFileName} (type: ${fileType})`);
       
       // Convert Oracle to Snowflake
       const snowflakeCode = await this.convertOracleToSnowflake(oracleCode, path.basename(filePath), fileType);
@@ -631,7 +633,7 @@ $$;
       await fs.ensureDir(path.dirname(snowflakeFilePath));
       await fs.writeFile(snowflakeFilePath, snowflakeCode, 'utf8');
       
-      console.log(`Worker created file: ${snowflakeFilePath}`);
+      log.info(`Worker created file: ${snowflakeFilePath}`);
       
       return {
         original: relativePath,
@@ -644,7 +646,7 @@ $$;
       };
       
     } catch (error) {
-      console.error(`Worker error processing ${filePath}:`, error);
+      log.error(`Worker error processing ${filePath}`, { error: error.message, stack: error.stack });
       
       return {
         original: path.relative(extractedPath, filePath),
@@ -668,12 +670,12 @@ const worker = new OracleConversionWorker();
 
 parentPort.on('message', async (message) => {
   try {
-    console.log(`🔧 Worker received file: ${path.basename(message.filePath)}`);
+    log.info(`🔧 Worker received file: ${path.basename(message.filePath)}`);
     const result = await worker.processFile(message);
-    console.log(`✅ Worker completed file: ${path.basename(message.filePath)}`);
+    log.info(`✅ Worker completed file: ${path.basename(message.filePath)}`);
     parentPort.postMessage({ success: true, result });
   } catch (error) {
-    console.error(`❌ Worker error processing ${path.basename(message.filePath)}:`, error.message);
+    log.error(`❌ Worker error processing ${path.basename(message.filePath)}`, { error: error.message });
     parentPort.postMessage({ success: false, error: error.message });
   }
 });

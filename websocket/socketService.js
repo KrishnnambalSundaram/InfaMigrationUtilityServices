@@ -1,4 +1,7 @@
 const { Server } = require('socket.io');
+const config = require('../config');
+const { createModuleLogger } = require('../utils/logger');
+const log = createModuleLogger('websocket/socketService');
 
 class SocketService {
   constructor() {
@@ -8,22 +11,23 @@ class SocketService {
 
   // Initialize Socket.IO with HTTP server
   initialize(server) {
+    const origins = config.corsOrigins;
     this.io = new Server(server, {
       cors: {
-        origin: "*",
+        origin: origins.length === 1 && origins[0] === '*' ? true : origins,
         methods: ["GET", "POST"]
       }
     });
 
     this.setupEventHandlers();
-    console.log('🔌 Socket.IO service initialized');
+    log.info('🔌 Socket.IO service initialized');
     return this.io;
   }
 
   // Setup Socket.IO event handlers
   setupEventHandlers() {
     this.io.on('connection', (socket) => {
-      console.log(`🔌 Client connected: ${socket.id}`);
+      log.info(`🔌 Client connected: ${socket.id}`);
       this.connectedClients.set(socket.id, {
         id: socket.id,
         connectedAt: new Date(),
@@ -44,7 +48,7 @@ class SocketService {
         if (client) {
           client.rooms.add(jobId);
         }
-        console.log(`📡 Client ${socket.id} joined job room: ${jobId}`);
+        log.info(`📡 Client ${socket.id} joined job room: ${jobId}`);
       });
       
       // Handle leaving a job room
@@ -54,7 +58,7 @@ class SocketService {
         if (client) {
           client.rooms.delete(jobId);
         }
-        console.log(`📡 Client ${socket.id} left job room: ${jobId}`);
+        log.info(`📡 Client ${socket.id} left job room: ${jobId}`);
       });
       
       // Handle custom events
@@ -63,13 +67,13 @@ class SocketService {
       });
       
       socket.on('disconnect', () => {
-        console.log(`🔌 Client disconnected: ${socket.id}`);
+        log.info(`🔌 Client disconnected: ${socket.id}`);
         this.connectedClients.delete(socket.id);
       });
       
       // Handle job completion cleanup
       socket.on('job-completed', (jobId) => {
-        console.log(`📋 Job completed, cleaning up room: ${jobId}`);
+        log.info(`📋 Job completed, cleaning up room: ${jobId}`);
         socket.leave(jobId);
         const client = this.connectedClients.get(socket.id);
         if (client) {
@@ -87,7 +91,7 @@ class SocketService {
         timestamp: new Date().toISOString(),
         ...data
       });
-      console.log(`📡 Emitted progress update (broadcast) for job: ${jobId} (${data.progress}%)`);
+      log.info(`📡 Emitted progress update (broadcast) for job: ${jobId} (${data.progress}%)`);
     }
   }
 
@@ -98,7 +102,7 @@ class SocketService {
         timestamp: new Date().toISOString(),
         ...data
       });
-      console.log(`📡 Emitted progress update to all clients (${data.progress}%)`);
+      log.info(`📡 Emitted progress update to all clients (${data.progress}%)`);
     }
   }
 
@@ -117,7 +121,7 @@ class SocketService {
         type,
         timestamp: new Date().toISOString()
       });
-      console.log(`📢 System notification sent to all clients: ${message}`);
+      log.info(`📢 System notification sent to all clients: ${message}`);
     }
   }
 
