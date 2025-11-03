@@ -596,7 +596,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
   }
 };
 
-// Convert single script to IDMC (for UI)
+// Convert single script to IDMC (for UI) - SQL files use Oracle/Redshift methods
 const handleConvertSingleScriptToIDMC = async (req, res) => {
   try {
     const { script, fileName, scriptType } = req.body;
@@ -686,7 +686,7 @@ async function createIDMCZipFile(idmcFiles, zipPath) {
   });
 }
 
-// Helper: find SQL-like files for auto-detect flow
+// Helper: find SQL-like files for auto-detect flow (SQL files only)
 async function findSqlLikeFiles(directory) {
   const files = [];
   async function scanDir(dir) {
@@ -697,6 +697,7 @@ async function findSqlLikeFiles(directory) {
         await scanDir(fullPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
+        // Only SQL files - batch scripts use different endpoint
         if ([".sql", ".pls", ".pkg", ".prc", ".fnc", ".rs", ".redshift"].includes(ext)) {
           files.push(fullPath);
         }
@@ -714,13 +715,14 @@ const handleConvertAutoToIDMC = async (req, res) => {
   try {
     const { zipFilePath, sourceCode, fileName } = req.body;
 
-    // If direct code provided, reuse single-script handler path
+    // If direct code provided, detect SQL type and use appropriate method
     if (sourceCode) {
       const detected = idmcConversionService.analyzeSqlContent(sourceCode);
+      const inputFileName = fileName || 'input.sql';
       const idmcSummary = detected === 'redshift'
-        ? await idmcConversionService.convertRedshiftToIDMC(sourceCode, fileName || 'input.sql', 'sql')
-        : await idmcConversionService.convertOracleToIDMC(sourceCode, fileName || 'input.sql', 'sql');
-      return res.status(200).json({ success: true, scriptType: detected, fileName: fileName || 'input.sql', idmcSummary });
+        ? await idmcConversionService.convertRedshiftToIDMC(sourceCode, inputFileName, 'sql')
+        : await idmcConversionService.convertOracleToIDMC(sourceCode, inputFileName, 'sql');
+      return res.status(200).json({ success: true, scriptType: detected, fileName: inputFileName, idmcSummary });
     }
 
     if (!zipFilePath) {

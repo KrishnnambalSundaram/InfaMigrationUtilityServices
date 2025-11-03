@@ -443,7 +443,7 @@ Type: ${fileType}`;
   getIDMCFileName(originalPath, fileType = 'sql') {
     const ext = path.extname(originalPath);
     const baseName = path.basename(originalPath, ext);
-    return `${baseName}_IDMC_Summary.json`;
+    return `${baseName}_IDMC_Summary.md`;
   }
 
   // Method to convert direct Oracle code input to IDMC mapping
@@ -479,6 +479,119 @@ Type: ${fileType}`;
     } catch (error) {
       console.error('❌ Error converting direct Redshift code to IDMC:', error);
       throw new Error(`Failed to convert Redshift code to IDMC: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generic method to convert any file (batch scripts, SQL, Node.js, etc.) to IDMC Mapping Summary
+   * This method passes the entire file content to OpenAI with a comprehensive prompt
+   * that works for all file types without complex parsing.
+   */
+  async convertToIDMC(fileContent, fileName, fileType = null) {
+    try {
+      if (!this.apiKey || !this.openai) {
+        throw new Error('OpenAI API key not configured');
+      }
+
+      // Determine file type if not provided
+      if (!fileType) {
+        const ext = path.extname(fileName).replace('.', '').toLowerCase();
+        fileType = ext || 'txt';
+      }
+
+      const systemPrompt = `You are an expert Node.js architect and IDMC (Informatica Data Management Cloud) integration specialist.
+
+I will give you a file (which could be a batch script, SQL script, Node.js project, shell script, or any automation/data processing script).  
+
+Your job is to analyze it and generate a **structured documentation summary** similar to an **Informatica IDMC Mapping Summary**, clearly explaining what the script does and how it fits in a data or automation pipeline.
+
+Your summary must include these sections:
+
+## 🧩 IDMC Mapping Summary
+
+### 1. Objective
+Explain in one paragraph what the script is trying to achieve (e.g., data processing, automation, API service, ETL orchestration, database operations, stored procedure execution, etc.). Be specific and detailed.
+
+### 2. Source Objects
+List all input sources (files, APIs, databases, scripts, environment variables, command-line arguments, etc.) in a markdown table with their purpose.
+
+| Source Type | Source Name | Description |
+
+### 3. Target Objects
+List all output or destination systems (databases, files, logs, APIs, etc.).
+
+| Target Type | Target Name | Description |
+
+### 4. Transformation / Logic Details
+Step-by-step breakdown of the logic or data flow within the script. Be thorough and detailed.
+
+| Step | Logic Description |
+
+### 5. Parameters / Environment Variables
+List all environment variables, parameters, command-line arguments, or configuration inputs used by the script.
+
+| Parameter | Description | Example |
+
+### 6. Error Handling
+Explain how the script handles failures, logging, retries, or fallback behavior. Be specific about error codes, error levels, and error propagation.
+
+### 7. Logging & Audit
+Explain what logs or monitoring outputs are produced (file logs, console, DB updates, etc.). Include log file names, log formats, and what information is logged.
+
+| Log File | Content |
+
+### 8. Schedule / Execution Context
+Describe how and when this script runs — manually, on schedule, or as part of a larger system (e.g., Informatica job, CI/CD pipeline, cron job, task scheduler, ETL workflow).
+
+---
+
+CRITICAL REQUIREMENTS:
+1. Analyze the ENTIRE file content thoroughly - don't just skim the surface
+2. For batch scripts (.bat, .sh): Explain the full orchestration flow, including how scripts call other scripts, how SQL*Plus or database clients are invoked, how parameters are passed, and what the overall workflow achieves
+3. For SQL scripts: Explain stored procedures, functions, tables, and the business logic they implement
+4. For any script: Identify ALL dependencies, inputs, outputs, and the complete data flow
+5. Be detailed and comprehensive - the summary should be useful for someone who needs to understand or migrate the script
+6. Use the exact table formats shown above
+7. If the script calls stored procedures or functions, explain what those procedures do and their purpose in the overall flow
+8. If the script processes data, explain the transformation logic step by step
+9. If the script orchestrates other scripts or processes, explain the orchestration flow
+
+OUTPUT FORMAT:
+- Output in markdown format with tables as specified above
+- Start with "## 🧩 IDMC Mapping Summary"
+- Follow the exact section numbering and structure shown
+- Use proper markdown table formatting
+- Be comprehensive and detailed`;
+
+      const userPrompt = `Analyze the following file and generate an IDMC Mapping Summary using the format specified above.
+
+File Name: ${fileName}
+File Type: ${fileType}
+
+File Content:
+\`\`\`
+${fileContent}
+\`\`\`
+
+Please provide a comprehensive IDMC Mapping Summary that follows the exact format specified above. Analyze the entire file thoroughly and provide detailed information for all 8 sections.`;
+
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 4000
+      });
+
+      const idmcSummary = response.choices[0].message.content.trim();
+      
+      return idmcSummary;
+
+    } catch (error) {
+      console.error('Error converting file to IDMC:', error);
+      throw new Error(`File to IDMC conversion failed: ${error.message}`);
     }
   }
 }

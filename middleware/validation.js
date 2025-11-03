@@ -193,6 +193,86 @@ const validateUnifiedBatch = [
   handleValidationErrors
 ];
 
+// New batch processing validation (without scriptType - auto-detected)
+const validateBatchProcessing = [
+  body('inputType')
+    .isString()
+    .withMessage('inputType is required')
+    .isIn(['zip', 'single'])
+    .withMessage('inputType must be one of: zip, single'),
+
+  body('outputFormat')
+    .optional()
+    .isIn(['doc', 'txt'])
+    .withMessage('outputFormat must be one of: doc, txt'),
+
+  body('name')
+    .optional()
+    .isString()
+    .withMessage('name must be a string')
+    .custom((value, { req }) => {
+      // If inputType is single and script is provided (but no filePath), name is required
+      if (req.body.inputType === 'single' && req.body.script && !req.body.filePath && !value) {
+        throw new Error('name is required when inputType is "single" and script is provided');
+      }
+      return true;
+    }),
+
+  // For zip inputType
+  body('zipPath')
+    .optional()
+    .isString()
+    .withMessage('zipPath must be a string')
+    .custom((value, { req }) => {
+      if (req.body.inputType === 'zip' && !value && !req.body.zipFilePath) {
+        throw new Error('zipPath is required when inputType is "zip"');
+      }
+      if (value && !value.match(/\.zip$/i)) {
+        throw new Error('zipPath must point to a ZIP file');
+      }
+      return true;
+    }),
+
+  body('zipFilePath')
+    .optional()
+    .isString()
+    .withMessage('zipFilePath must be a string')
+    .custom((value, { req }) => {
+      if (req.body.inputType === 'zip' && !value && !req.body.zipPath) {
+        throw new Error('zipPath or zipFilePath is required when inputType is "zip"');
+      }
+      if (value && !value.match(/\.zip$/i)) {
+        throw new Error('zipFilePath must point to a ZIP file');
+      }
+      return true;
+    }),
+
+  // For single inputType
+  body('script')
+    .optional()
+    .isString()
+    .withMessage('script must be a string')
+    .custom((value, { req }) => {
+      if (req.body.inputType === 'single' && !value && !req.body.filePath) {
+        throw new Error('script or filePath is required when inputType is "single"');
+      }
+      return true;
+    }),
+
+  body('filePath')
+    .optional()
+    .isString()
+    .withMessage('filePath must be a string')
+    .custom((value, { req }) => {
+      if (req.body.inputType === 'single' && !value && !req.body.script) {
+        throw new Error('script or filePath is required when inputType is "single"');
+      }
+      return true;
+    }),
+
+  handleValidationErrors
+];
+
 // WebSocket notification validation
 const validateWebSocketNotification = [
   body('message')
@@ -260,6 +340,7 @@ module.exports = {
   validateDirectCodeInput,
   validateUnifiedConvert,
   validateUnifiedBatch,
+  validateBatchProcessing,
   validateJobId,
   validateDownloadRequest,
   validateWebSocketNotification,
