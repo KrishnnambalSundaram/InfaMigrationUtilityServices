@@ -736,8 +736,22 @@ const handleConvert = async (req, res) => {
       log.info('✅ Converted folder cleaned up');
     }
     
-    // Complete the job
+    // Standardized response structure for all ZIP conversions
     const result = {
+      zipFilename: zipFileName,
+      zipFilePath: path.resolve(zipPath),
+      results: conversionResult.convertedFiles.map(f => ({
+        fileName: f.original || f.converted || 'unknown',
+        originalContent: f.oracleContent || '',
+        convertedContent: f.snowflakeContent || '',
+        success: f.success !== false
+      })),
+      processing: {
+        totalFiles: conversionResult.totalFiles,
+        processedFiles: conversionResult.totalConverted,
+        failedFiles: conversionResult.errors ? conversionResult.errors.length : 0,
+        successRate: conversionResult.totalFiles > 0 ? Math.round((conversionResult.totalConverted / conversionResult.totalFiles) * 100) : 0
+      },
       analysis: {
         totalFiles: analysis.totalFiles,
         sqlFiles: analysis.sqlFiles,
@@ -753,15 +767,7 @@ const handleConvert = async (req, res) => {
         sequences: analysis.sequences.length,
         dependencies: analysis.dependencies.length,
         plsqlFilesList: analysis.plsqlFilesList
-      },
-      conversion: {
-        totalConverted: conversionResult.totalConverted,
-        totalFiles: conversionResult.totalFiles,
-        successRate: Math.round((conversionResult.totalConverted / conversionResult.totalFiles) * 100),
-        convertedFiles: conversionResult.convertedFiles,
-        errors: conversionResult.errors
-      },
-      zipFilename: zipFileName
+      }
     };
     
     progressService.completeJob(jobId, result);
@@ -1330,8 +1336,25 @@ const handleUnifiedConvert = async (req, res) => {
       progressService.updateProgress(jobId, 2, 100, 'Completed');
       progressEmitter.emitJobCompleted(jobId, { conversion: conversionResult, zipFilename: outZipName });
 
-      progressService.completeJob(jobId, { conversion: conversionResult, zipFilename: outZipName, zipFilePath: path.resolve(outZipPath) });
-      return res.status(200).json({ success: true, target, jobId, zipFilename: outZipName, zipFilePath: path.resolve(outZipPath), jsonContent: null, conversion: conversionResult });
+      // Standardized response structure for all ZIP conversions
+      const result = {
+        zipFilename: outZipName,
+        zipFilePath: path.resolve(outZipPath),
+        results: conversionResult.convertedFiles.map(f => ({
+          fileName: f.original || f.converted || 'unknown',
+          originalContent: f.oracleContent || '',
+          convertedContent: f.snowflakeContent || '',
+          success: f.success !== false
+        })),
+        processing: {
+          totalFiles: conversionResult.totalFiles,
+          processedFiles: conversionResult.totalConverted,
+          failedFiles: conversionResult.errors ? conversionResult.errors.length : 0,
+          successRate: conversionResult.totalFiles > 0 ? Math.round((conversionResult.totalConverted / conversionResult.totalFiles) * 100) : 0
+        }
+      };
+      progressService.completeJob(jobId, result);
+      return res.status(200).json({ success: true, target, jobId, ...result });
     }
 
     // IDMC (zip): use worker pool for per-file conversion
@@ -1344,30 +1367,60 @@ const handleUnifiedConvert = async (req, res) => {
 
     // Optionally render DOCX/PDF variants of the IDMC summaries
     const filesForZip = [];
-    const wantJson = outputFormat === 'json' || outputFormat === 'all';
-    const wantDocx = outputFormat === 'docx' || outputFormat === 'all';
-    const wantPdf = outputFormat === 'pdf' || outputFormat === 'all';
+    // Normalize outputFormat to lowercase and trim whitespace
+    const normalizedOutputFormat = (outputFormat || 'json').toString().toLowerCase().trim();
+    const wantDocx = normalizedOutputFormat === 'docx' || normalizedOutputFormat === 'all';
+    const wantJson = normalizedOutputFormat === 'json' || normalizedOutputFormat === 'all';
+    const wantPdf = normalizedOutputFormat === 'pdf' || normalizedOutputFormat === 'all';
 
-    if (wantJson) {
-      filesForZip.push(...idmcFiles.map(f => ({ name: f.name, content: f.content })));
+    log.info(`📋 Output format: "${outputFormat}" (normalized: "${normalizedOutputFormat}"), wantJson: ${wantJson}, wantDocx: ${wantDocx}, wantPdf: ${wantPdf}`);
+    log.info(`📋 Processing ${idmcFiles.length} IDMC files`);
+
+    // CRITICAL: Never add .md files to zip - only add files in the requested format
+    // Convert to requested format (docx, json, etc.) - NEVER use .md extension
+    const documentService = require('../services/documentService');
+    for (const f of idmcFiles) {
+      if (wantDocx) {
+        log.info(`📄 Converting ${f.name} to DOCX format`);
+        const docxBuf = await documentService.markdownToDocxBuffer(f.content, f.name);
+        // Replace .md extension with .docx - use path module for reliable extension handling
+        const ext = path.extname(f.name);
+        const baseName = f.name.substring(0, f.name.length - ext.length);
+        const docxName = baseName + '.docx';
+        log.info(`📄 Adding ${docxName} to zip (original: ${f.name}, ext: ${ext})`);
+        filesForZip.push({ name: docxName, content: docxBuf });
+      }
+      if (wantJson) {
+        // For JSON format, save as .json file (not .md)
+        const ext = path.extname(f.name);
+        const baseName = f.name.substring(0, f.name.length - ext.length);
+        const jsonName = baseName + '.json';
+        const jsonContent = JSON.stringify({ content: f.content }, null, 2);
+        log.info(`📄 Adding ${jsonName} to zip`);
+        filesForZip.push({ name: jsonName, content: jsonContent });
+      }
+      // PDF generation not implemented to avoid heavy deps; reserved for future
     }
 
-    if (wantDocx || wantPdf) {
-      const documentService = require('../services/documentService');
-      for (const f of idmcFiles) {
-        if (wantDocx) {
-          const docxBuf = await documentService.markdownToDocxBuffer(f.content, f.name);
-          const docxName = f.name.replace(/_IDMC_Summary\.json$/i, '_IDMC_Summary.docx');
-          filesForZip.push({ name: docxName, content: docxBuf });
-        }
-        // PDF generation not implemented to avoid heavy deps; reserved for future
-      }
+    log.info(`📦 Total files to add to zip: ${filesForZip.length}`);
+    filesForZip.forEach((f, i) => log.info(`  ${i + 1}. ${f.name}`));
+    
+    // Final validation: ensure NO .md files are ever in the zip
+    const mdFiles = filesForZip.filter(f => f.name.endsWith('.md'));
+    if (mdFiles.length > 0) {
+      log.error(`❌ ERROR: Found ${mdFiles.length} .md files in zip! Removing them...`);
+      mdFiles.forEach(f => log.error(`  - ${f.name}`));
+      // Remove .md files
+      const filesForZipFiltered = filesForZip.filter(f => !f.name.endsWith('.md'));
+      log.info(`📦 Filtered ${filesForZip.length - filesForZipFiltered.length} .md files, keeping ${filesForZipFiltered.length} files`);
+      filesForZip.length = 0;
+      filesForZip.push(...filesForZipFiltered);
     }
 
     const zipsPath = process.env.ZIPS_PATH || './zips';
     await fs.ensureDir(zipsPath);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const suffix = outputFormat === 'json' ? 'json' : (outputFormat === 'docx' ? 'docx' : (outputFormat === 'pdf' ? 'pdf' : 'all'));
+    const suffix = normalizedOutputFormat === 'json' ? 'json' : (normalizedOutputFormat === 'docx' ? 'docx' : (normalizedOutputFormat === 'pdf' ? 'pdf' : 'all'));
     const outZipName = `idmc_summaries_${suffix}_${timestamp}.zip`;
     const outZipPath = path.join(zipsPath, outZipName);
     await createSnowflakeZipFile(filesForZip, outZipPath); // same zip helper works with {name,content}
@@ -1384,19 +1437,25 @@ const handleUnifiedConvert = async (req, res) => {
     }
     progressEmitter.emitJobCompleted(jobId, { conversion: { totalConverted: convertedFiles.filter(f => f.success).length, totalFiles: total }, zipFilename: outZipName });
 
+    // Standardized response structure for all ZIP conversions
     const result = {
-      conversion: {
-        totalConverted: convertedFiles.filter(f => f.success).length,
-        totalFiles: total,
-        successRate: total ? Math.round((convertedFiles.filter(f => f.success).length / total) * 100) : 0,
-        convertedFiles,
-        errors: convertedFiles.filter(f => !f.success)
-      },
       zipFilename: outZipName,
-      zipFilePath: path.resolve(outZipPath)
+      zipFilePath: path.resolve(outZipPath),
+      results: convertedFiles.map(f => ({
+        fileName: f.original || f.converted || 'unknown',
+        originalContent: f.originalContent || '',
+        convertedContent: f.idmcContent || f.convertedContent || '',
+        success: f.success !== false
+      })),
+      processing: {
+        totalFiles: total,
+        processedFiles: convertedFiles.filter(f => f.success).length,
+        failedFiles: convertedFiles.filter(f => !f.success).length,
+        successRate: total ? Math.round((convertedFiles.filter(f => f.success).length / total) * 100) : 0
+      }
     };
     progressService.completeJob(jobId, result);
-    return res.status(200).json({ success: true, target, jobId, jsonContent: null, ...result });
+    return res.status(200).json({ success: true, target, jobId, ...result });
   } catch (error) {
     if (jobId) {
       progressService.failJob(jobId, error.message);

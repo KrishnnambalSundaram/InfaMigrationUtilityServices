@@ -1,5 +1,7 @@
 const batchScriptService = require('../services/batchScriptService');
 const progressService = require('../services/progressService');
+const progressEmitter = require('../websocket/progressEmitter');
+const { Worker } = require('worker_threads');
 const fs = require('fs-extra');
 const path = require('path');
 const unzipper = require('unzipper');
@@ -11,6 +13,163 @@ const config = require('../config');
 const { assertPathUnder } = require('../utils/pathUtils');
 const { createModuleLogger } = require('../utils/logger');
 const log = createModuleLogger('controllers/batchScriptController');
+
+// Process batch scripts using worker threads for parallel processing
+async function processBatchScriptsWithWorkers(extractedPath, jobId, conversionType = 'idmc') {
+  const files = [];
+  await batchScriptService.findBatchScriptFiles(extractedPath, files);
+  const sortedFiles = files.sort((a, b) => {
+    const nameA = path.basename(a);
+    const nameB = path.basename(b);
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  const totalFiles = sortedFiles.length;
+  
+  if (totalFiles === 0) {
+    log.warn('⚠️ No batch script files found to process');
+    return {
+      totalFiles: 0,
+      processedFiles: 0,
+      failedFiles: 0,
+      results: []
+    };
+  }
+  
+  log.info(`📝 Processing ${totalFiles} batch script files using worker threads (${conversionType})`);
+  
+  // Use workers for parallel processing
+  const maxWorkers = Math.min(8, totalFiles); // Use up to 8 workers
+  const workers = [];
+  const fileQueue = [...sortedFiles];
+  const results = [];
+  
+  log.info(`Starting ${maxWorkers} worker threads for parallel processing`);
+  
+  // Create workers
+  for (let i = 0; i < maxWorkers; i++) {
+    const worker = new Worker(path.join(__dirname, '..', 'workers', 'batchScriptConversionWorker.js'));
+    worker.workerId = i + 1;
+    workers.push(worker);
+    
+    log.info(`🔧 Created Worker ${worker.workerId}`);
+    
+    worker.on('message', (message) => {
+      if (message.success) {
+        log.info(`✅ Worker ${worker.workerId} completed: ${path.basename(message.result.fileName || message.result.original)} (${results.length + 1}/${totalFiles})`);
+        results.push(message.result);
+        
+        // Update progress
+        const progress = 10 + Math.round((results.length / totalFiles) * 80); // 10-90% range
+        progressService.updateProgress(jobId, 1, progress, `Processing file ${results.length}/${totalFiles}: ${path.basename(message.result.fileName || message.result.original)}`);
+        try { progressEmitter.emitStepUpdate(jobId, 1, progress, `Processing file ${results.length}/${totalFiles}: ${path.basename(message.result.fileName || message.result.original)}`); } catch (_) {}
+        
+        // Process next file if available
+        if (fileQueue.length > 0) {
+          const nextFile = fileQueue.shift();
+          log.info(`🔄 Worker ${worker.workerId} processing next file: ${path.basename(nextFile)}`);
+          worker.postMessage({
+            filePath: nextFile,
+            extractedPath: extractedPath,
+            conversionType: conversionType
+          });
+        } else {
+          log.info(`🏁 Worker ${worker.workerId} finished all assigned files`);
+          worker.terminate();
+        }
+      } else {
+        log.error(`❌ Worker ${worker.workerId} error: ${message.error}`);
+        results.push(message.result || {
+          fileName: 'unknown',
+          original: 'unknown',
+          originalContent: null,
+          convertedContent: null,
+          success: false,
+          error: message.error
+        });
+        
+        // Process next file if available
+        if (fileQueue.length > 0) {
+          const nextFile = fileQueue.shift();
+          log.info(`🔄 Worker ${worker.workerId} retrying with next file: ${path.basename(nextFile)}`);
+          worker.postMessage({
+            filePath: nextFile,
+            extractedPath: extractedPath,
+            conversionType: conversionType
+          });
+        } else {
+          log.info(`🏁 Worker ${worker.workerId} finished all assigned files`);
+          worker.terminate();
+        }
+      }
+    });
+    
+    worker.on('error', (error) => {
+      log.error(`❌ Worker ${worker.workerId} error`, { error: error.message, stack: error.stack });
+    });
+    
+    worker.on('exit', (code) => {
+      log.info(`🔚 Worker ${worker.workerId} exited with code ${code}`);
+    });
+  }
+  
+  // Start processing files
+  log.info(`🚀 Starting ${Math.min(maxWorkers, fileQueue.length)} workers with initial files...`);
+  for (let i = 0; i < Math.min(maxWorkers, fileQueue.length); i++) {
+    const file = fileQueue.shift();
+    log.info(`🔄 Worker ${i + 1} starting with: ${path.basename(file)}`);
+    workers[i].postMessage({
+      filePath: file,
+      extractedPath: extractedPath,
+      conversionType: conversionType
+    });
+  }
+  
+  // Wait for all workers to complete with timeout
+  log.info(`⏳ Waiting for ${totalFiles} files to be processed by ${maxWorkers} workers...`);
+  const startTime = Date.now();
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      log.warn('⚠️ Worker timeout after 10 minutes');
+      workers.forEach(worker => worker.terminate());
+      reject(new Error('Worker timeout'));
+    }, 600000); // 10 minute timeout
+    
+    const checkCompletion = () => {
+      if (results.length === totalFiles) {
+        clearTimeout(timeout);
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        log.info(`🎉 All workers completed in ${duration.toFixed(2)} seconds`);
+        log.info(`📊 Performance: ${(totalFiles / duration).toFixed(2)} files/second`);
+        resolve();
+      } else {
+        setTimeout(checkCompletion, 100);
+      }
+    };
+    checkCompletion();
+  }).catch(async (error) => {
+    log.error('❌ Worker processing failed', { error: error.message });
+    workers.forEach(worker => worker.terminate());
+    throw error;
+  });
+  
+  // Sort results by original filename to maintain consistent order
+  results.sort((a, b) => {
+    const nameA = (a.fileName || a.original || '').toLowerCase();
+    const nameB = (b.fileName || b.original || '').toLowerCase();
+    return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+  
+  log.info(`Worker conversion completed: ${results.filter(r => r.success !== false).length}/${totalFiles} files processed successfully`);
+  
+  return {
+    totalFiles: totalFiles,
+    processedFiles: results.filter(r => r.success !== false).length,
+    failedFiles: results.filter(r => r.success === false).length,
+    results: results
+  };
+}
 
 // Process batch scripts and convert to IDMC summaries
 const handleProcessBatchScripts = async (req, res) => {
@@ -52,9 +211,19 @@ const handleProcessBatchScripts = async (req, res) => {
     const job = progressService.createJob(jobId);
     log.info(`🚀 Starting batch script processing job: ${jobId}`);
     
+    // Set WebSocket job context and emit job created
+    try {
+      const apiCtx = { method: req.method, path: req.originalUrl || req.url, endpoint: 'batch-to-idmc' };
+      require('../websocket').setJobContext(jobId, apiCtx);
+      progressEmitter.emitJobCreated(jobId, job);
+    } catch (err) {
+      log.warn('WebSocket setup failed, continuing without WebSocket updates', { error: err.message });
+    }
+    
     // Extract the zip file
     log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
+    try { progressEmitter.emitStepUpdate(jobId, 0, 10, 'Extracting zip file...'); } catch (_) {}
     const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
@@ -80,17 +249,23 @@ const handleProcessBatchScripts = async (req, res) => {
     
     log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
-    // Process batch scripts
+    // Process batch scripts using worker threads
     log.info('🔄 Processing batch scripts...');
     progressService.updateProgress(jobId, 1, 10, 'Processing batch scripts...');
+    try { progressEmitter.emitStepUpdate(jobId, 1, 10, 'Processing batch scripts...'); } catch (_) {}
     
-    const processingResult = await batchScriptService.processBatchScriptDirectory(extractedPath);
-    progressService.updateProgress(jobId, 1, 100, 'Batch script processing complete');
-    log.info(`✅ Processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
+    // Use worker threads for parallel processing
+    log.info('🚀 Starting worker-based batch script processing...');
+    const processingResult = await processBatchScriptsWithWorkers(extractedPath, jobId, 'idmc');
+    log.info(`✅ Worker processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
+    
+    progressService.updateProgress(jobId, 1, 100, `Batch script processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
+    try { progressEmitter.emitStepUpdate(jobId, 1, 100, `Batch script processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`); } catch (_) {}
     
     // Create final ZIP with IDMC summaries
     log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
+    try { progressEmitter.emitStepUpdate(jobId, 2, 10, 'Creating final IDMC package...'); } catch (_) {}
     const zipsPath = config.paths.zips;
     await fs.ensureDir(zipsPath);
     
@@ -99,37 +274,59 @@ const handleProcessBatchScripts = async (req, res) => {
     const zipFileName = `batch_scripts_idmc_summaries_${suffix}_${timestamp}.zip`;
     const zipPath = path.join(zipsPath, zipFileName);
     
-    // Create zip file with IDMC summaries
-    await createBatchIDMCZipFile(processingResult.results, zipPath, outputFormat);
-    progressService.updateProgress(jobId, 2, 100, 'Final package created');
+    log.info(`📦 Creating zip file: ${zipPath}`);
+    log.info(`📊 Processing ${processingResult.results.length} results for zip creation`);
     
-    // Complete the job
+    // Create zip file with IDMC summaries
+    try {
+      await createBatchIDMCZipFile(processingResult.results, zipPath, outputFormat);
+      log.info(`✅ Zip file created successfully: ${zipPath}`);
+    } catch (zipError) {
+      log.error('❌ Error creating zip file, but continuing with response', { error: zipError.message, stack: zipError.stack });
+      // Continue even if zip creation fails - we'll still send the response with results
+    }
+    
+    progressService.updateProgress(jobId, 2, 100, 'Final package created');
+    try { progressEmitter.emitStepUpdate(jobId, 2, 100, 'Final package created'); } catch (_) {}
+    
+    // Standardized response structure for all ZIP conversions
     const result = {
+      zipFilename: zipFileName,
+      zipFilePath: path.resolve(zipPath),
+      results: processingResult.results.map(r => ({
+        fileName: r.fileName || r.original || 'unknown',
+        originalContent: r.originalContent || '',
+        convertedContent: (r.idmcSummaries && r.idmcSummaries.length > 0 && r.idmcSummaries[0].idmcSummary) || r.convertedContent || '',
+        success: r.success !== false
+      })),
       processing: {
         totalFiles: processingResult.totalFiles,
         processedFiles: processingResult.processedFiles,
         failedFiles: processingResult.failedFiles,
-        successRate: Math.round((processingResult.processedFiles / processingResult.totalFiles) * 100),
-        results: processingResult.results
-      },
-      zipFilename: zipFileName,
-      zipFilePath: path.resolve(zipPath)
+        successRate: processingResult.totalFiles > 0 ? Math.round((processingResult.processedFiles / processingResult.totalFiles) * 100) : 0
+      }
     };
     
+    log.info(`📋 Preparing response with ${result.results.length} results`);
     progressService.completeJob(jobId, result);
+    try { progressEmitter.emitJobCompleted(jobId, result); } catch (_) {}
     
-    res.status(200).json({
+    log.info(`📤 Sending success response for job: ${jobId}`);
+    const response = {
       success: true,
       message: 'Batch script processing completed successfully',
       source: zipFilePath,
       jobId: jobId,
-      jsonContent: JSON.stringify(processingResult, null, 2),
       ...result
-    });
+    };
+    
+    log.info(`✅ Response prepared, sending to client...`);
+    return res.status(200).json(response);
     
   } catch (error) {
     log.error('❌ Batch script processing failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
+    try { progressEmitter.emitJobFailed(jobId, error.message); } catch (_) {}
     
     res.status(500).json({ 
       error: 'Batch script processing failed', 
@@ -357,9 +554,10 @@ async function createBatchIDMCZipFile(results, zipPath, outputType = 'doc') {
   return new Promise(async (resolve, reject) => {
     const output = fs.createWriteStream(zipPath);
     const archive = archiver('zip', { zlib: { level: 9 } });
+    let filesAdded = 0;
     
     output.on('close', () => {
-      log.info(`📦 Batch IDMC Zip file created: ${archive.pointer()} bytes`);
+      log.info(`📦 Batch IDMC Zip file created: ${archive.pointer()} bytes (${filesAdded} files)`);
       resolve();
     });
     
@@ -371,23 +569,28 @@ async function createBatchIDMCZipFile(results, zipPath, outputType = 'doc') {
     archive.pipe(output);
     
     // Add IDMC summary files for each processed batch script
+    const addFilesPromises = [];
     for (const result of results) {
-      if (result.success && result.idmcSummaries) {
+      // Check success properly - can be true or undefined (not explicitly false)
+      if (result.success !== false && result.idmcSummaries && Array.isArray(result.idmcSummaries)) {
         for (const idmcSummary of result.idmcSummaries) {
-          if (idmcSummary.idmcSummary) {
+          if (idmcSummary && idmcSummary.idmcSummary) {
             const base = (idmcSummary.fileName || 'IDMC_Summary').replace(/\.(md|docx?|txt)$/i, '');
             if (outputType === 'doc') {
               const docName = `${base}.docx`;
               const tempDocPath = path.join(require('os').tmpdir(), `idmc_${Date.now()}_${Math.random().toString(36).substring(7)}_${docName}`);
-              try {
-                await convertMarkdownToDocx(idmcSummary.idmcSummary, tempDocPath);
-                archive.file(tempDocPath, { name: docName });
-                // Clean up temp file after adding to archive
-                setTimeout(() => fs.remove(tempDocPath).catch(() => {}), 1000);
-                log.info(`📄 Added to batch IDMC zip: ${docName}`);
-              } catch (error) {
-                log.error(`Error creating docx for ${docName}:`, error);
-              }
+              const addFilePromise = convertMarkdownToDocx(idmcSummary.idmcSummary, tempDocPath)
+                .then(() => {
+                  archive.file(tempDocPath, { name: docName });
+                  filesAdded++;
+                  // Clean up temp file after adding to archive
+                  setTimeout(() => fs.remove(tempDocPath).catch(() => {}), 1000);
+                  log.info(`📄 Added to batch IDMC zip: ${docName}`);
+                })
+                .catch((error) => {
+                  log.error(`Error creating docx for ${docName}:`, error);
+                });
+              addFilesPromises.push(addFilePromise);
             } else {
               const txtName = `${base}.txt`;
               const plainText = idmcSummary.idmcSummary.replace(/#{1,6}\s+/g, '')
@@ -399,6 +602,7 @@ async function createBatchIDMCZipFile(results, zipPath, outputType = 'doc') {
                 .replace(/^\s*[-*+]\s+/gm, '')
                 .replace(/\n{3,}/g, '\n\n');
               archive.append(plainText, { name: txtName });
+              filesAdded++;
               log.info(`📄 Added to batch IDMC zip: ${txtName}`);
             }
           }
@@ -406,6 +610,15 @@ async function createBatchIDMCZipFile(results, zipPath, outputType = 'doc') {
       }
     }
     
+    // Wait for all async file operations to complete
+    await Promise.all(addFilesPromises);
+    
+    // Check if any files were added
+    if (filesAdded === 0) {
+      log.warn('⚠️ No files to add to zip - creating empty zip');
+    }
+    
+    // Finalize the archive (this will trigger the 'close' event which resolves the promise)
     archive.finalize();
   });
 }
@@ -546,9 +759,19 @@ const handleGenerateHumanReadableSummaryZip = async (req, res) => {
     const job = progressService.createJob(jobId);
     log.info(`🚀 Starting human-readable summary generation job: ${jobId}`);
     
+    // Set WebSocket job context and emit job created
+    try {
+      const apiCtx = { method: req.method, path: req.originalUrl || req.url, endpoint: 'batch-to-human-language' };
+      require('../websocket').setJobContext(jobId, apiCtx);
+      progressEmitter.emitJobCreated(jobId, job);
+    } catch (err) {
+      log.warn('WebSocket setup failed, continuing without WebSocket updates', { error: err.message });
+    }
+    
     // Extract the zip file
     log.info('📦 Extracting zip file...');
     progressService.updateProgress(jobId, 0, 10, 'Extracting zip file...');
+    try { progressEmitter.emitStepUpdate(jobId, 0, 10, 'Extracting zip file...'); } catch (_) {}
     const uploadPath = config.paths.uploads;
     extractedPath = path.join(uploadPath, 'temp', Date.now().toString());
     await fs.ensureDir(extractedPath);
@@ -574,52 +797,30 @@ const handleGenerateHumanReadableSummaryZip = async (req, res) => {
     
     log.info(`✅ Zip file extracted to: ${extractedPath}`);
     
-    // Process batch scripts
+    // Process batch scripts using worker threads
     log.info('🔄 Generating human-readable summaries...');
     progressService.updateProgress(jobId, 1, 10, 'Generating human-readable summaries...');
+    try { progressEmitter.emitStepUpdate(jobId, 1, 10, 'Generating human-readable summaries...'); } catch (_) {}
     
-    // Find all batch script files
-    const files = [];
-    await batchScriptService.findBatchScriptFiles(extractedPath, files);
-    const sortedFiles = files.sort((a, b) => {
-      const nameA = path.basename(a);
-      const nameB = path.basename(b);
-      return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
-    });
+    // Use worker threads for parallel processing
+    log.info('🚀 Starting worker-based human-readable summary generation...');
+    const processingResult = await processBatchScriptsWithWorkers(extractedPath, jobId, 'human-language');
+    log.info(`✅ Worker processing complete: ${processingResult.processedFiles}/${processingResult.totalFiles} files processed`);
     
-    const totalFiles = sortedFiles.length;
-    const processedFiles = [];
+    // Map results to processedFiles format for compatibility
+    const processedFiles = processingResult.results.map(result => ({
+      original: result.original,
+      fileName: result.fileName,
+      originalContent: result.originalContent,
+      convertedContent: result.convertedContent || result.summary,
+      summary: result.summary || result.convertedContent, // Keep for backward compatibility
+      success: result.success !== false
+    }));
     
-    for (let i = 0; i < totalFiles; i++) {
-      const filePath = sortedFiles[i];
-      try {
-        log.info(`Processing file ${i + 1}/${totalFiles}: ${path.basename(filePath)}`);
-        progressService.updateProgress(jobId, 1, Math.round(((i + 1) / totalFiles) * 90), `Processing file ${i + 1}/${totalFiles}: ${path.basename(filePath)}`);
-        
-        const content = await fs.readFile(filePath, 'utf8');
-        const fileName = path.basename(filePath);
-        const summary = await batchScriptService.generateHumanReadableSummary(content, fileName);
-        
-        processedFiles.push({
-          original: path.relative(extractedPath, filePath),
-          fileName: fileName,
-          summary: summary,
-          success: true
-        });
-        
-      } catch (error) {
-        log.error(`❌ Error processing file ${filePath}`, { error: error.message });
-        processedFiles.push({
-          original: path.relative(extractedPath, filePath),
-          fileName: path.basename(filePath),
-          summary: null,
-          success: false,
-          error: error.message
-        });
-      }
-    }
+    const totalFiles = processingResult.totalFiles;
     
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
+    try { progressEmitter.emitStepUpdate(jobId, 2, 10, 'Creating final package...'); } catch (_) {}
     
     // Create final ZIP with summaries
     const zipsPath = config.paths.zips;
@@ -629,36 +830,59 @@ const handleGenerateHumanReadableSummaryZip = async (req, res) => {
     const zipFileName = `human_readable_summaries_${suffix}_${timestamp}.zip`;
     const zipPath = path.join(zipsPath, zipFileName);
     
-    // Create zip file with summaries
-    await createHumanReadableZipFile(processedFiles, zipPath, outputFormat);
-    progressService.updateProgress(jobId, 2, 100, 'Final package created');
+    log.info(`📦 Creating zip file: ${zipPath}`);
+    log.info(`📊 Processing ${processedFiles.length} files for zip creation`);
     
-    // Complete the job
+    // Create zip file with summaries
+    try {
+      await createHumanReadableZipFile(processedFiles, zipPath, outputFormat);
+      log.info(`✅ Zip file created successfully: ${zipPath}`);
+    } catch (zipError) {
+      log.error('❌ Error creating zip file, but continuing with response', { error: zipError.message, stack: zipError.stack });
+      // Continue even if zip creation fails - we'll still send the response with results
+    }
+    
+    progressService.updateProgress(jobId, 2, 100, 'Final package created');
+    try { progressEmitter.emitStepUpdate(jobId, 2, 100, 'Final package created'); } catch (_) {}
+    
+    // Standardized response structure for all ZIP conversions
     const result = {
-      processing: {
-        totalFiles: totalFiles,
-        processedFiles: processedFiles.filter(f => f.success).length,
-        failedFiles: processedFiles.filter(f => !f.success).length,
-        successRate: totalFiles > 0 ? Math.round((processedFiles.filter(f => f.success).length / totalFiles) * 100) : 0,
-        results: processedFiles
-      },
       zipFilename: zipFileName,
-      zipFilePath: path.resolve(zipPath)
+      zipFilePath: path.resolve(zipPath),
+      results: processedFiles.map(f => ({
+        fileName: f.fileName || f.original || 'unknown',
+        originalContent: f.originalContent || '',
+        convertedContent: f.convertedContent || f.summary || '',
+        success: f.success !== false
+      })),
+      processing: {
+        totalFiles: processingResult.totalFiles,
+        processedFiles: processingResult.processedFiles,
+        failedFiles: processingResult.failedFiles,
+        successRate: totalFiles > 0 ? Math.round((processingResult.processedFiles / totalFiles) * 100) : 0
+      }
     };
     
+    log.info(`📋 Preparing response with ${result.results.length} results`);
     progressService.completeJob(jobId, result);
+    try { progressEmitter.emitJobCompleted(jobId, result); } catch (_) {}
     
-    res.status(200).json({
+    log.info(`📤 Sending success response for job: ${jobId}`);
+    const response = {
       success: true,
       message: 'Human-readable summary generation completed successfully',
       source: zipFilePath,
       jobId: jobId,
       ...result
-    });
+    };
+    
+    log.info(`✅ Response prepared, sending to client...`);
+    return res.status(200).json(response);
     
   } catch (error) {
     log.error('❌ Human-readable summary generation failed', { error: error.message, stack: error.stack });
     progressService.failJob(jobId, error.message);
+    try { progressEmitter.emitJobFailed(jobId, error.message); } catch (_) {}
     
     res.status(500).json({ 
       error: 'Human-readable summary generation failed', 

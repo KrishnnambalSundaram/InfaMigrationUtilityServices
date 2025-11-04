@@ -51,9 +51,24 @@ Sample response (single → Snowflake):
   "originalContent": "SELECT 1;",
   "convertedContent": "CREATE OR REPLACE ...",
   "outputFiles": [
-    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.sql", "path": "/abs/output/input_snowflake_....sql", "mime": "text/sql", "kind": "single" },
-    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.json", "path": "/abs/output/input_snowflake_....json", "mime": "application/json", "kind": "single" },
-    { "name": "input_snowflake_2025-10-30T09-00-00-000Z.docx", "path": "/abs/output/input_snowflake_....docx", "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "kind": "single" }
+    {
+      "name": "input_snowflake_2025-10-30T09-00-00-000Z.sql",
+      "path": "/abs/output/input_snowflake_....sql",
+      "mime": "text/sql",
+      "kind": "single"
+    },
+    {
+      "name": "input_snowflake_2025-10-30T09-00-00-000Z.json",
+      "path": "/abs/output/input_snowflake_....json",
+      "mime": "application/json",
+      "kind": "single"
+    },
+    {
+      "name": "input_snowflake_2025-10-30T09-00-00-000Z.docx",
+      "path": "/abs/output/input_snowflake_....docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "kind": "single"
+    }
   ]
 }
 ```
@@ -99,7 +114,15 @@ GET `/api/conversion/progress/:jobId`
 Response:
 
 ```json
-{ "success": true, "job": { "jobId": "...", "status": "pending|completed|failed", "result": {"zipFilename":"..."}, "error": null } }
+{
+  "success": true,
+  "job": {
+    "jobId": "...",
+    "status": "pending|completed|failed",
+    "result": { "zipFilename": "..." },
+    "error": null
+  }
+}
 ```
 
 ### 3) Download API
@@ -151,10 +174,24 @@ Response (single):
   "fileName": "run.bat",
   "scriptType": "oracle",
   "originalContent": "...",
-  "extractionResult": { "totalStatements": 2, "statements": [ {"type":"SELECT","statement":"..."} ] },
-  "idmcSummaries": [ { "fileName": "run.bat_statement_1_IDMC_Summary.md", "idmcSummary": "## 🧩 IDMC Mapping Summary ..." } ],
+  "extractionResult": {
+    "totalStatements": 2,
+    "statements": [{ "type": "SELECT", "statement": "..." }]
+  },
+  "idmcSummaries": [
+    {
+      "fileName": "run.bat_statement_1_IDMC_Summary.md",
+      "idmcSummary": "## 🧩 IDMC Mapping Summary ..."
+    }
+  ],
   "jsonContent": "### Statement 1\n\n## 🧩 IDMC Mapping Summary ...",
-  "outputFiles": [ { "name": "run.bat_statement_1_IDMC_Summary_...md", "path": "/abs/output/...md", "mime": "text/markdown" } ]
+  "outputFiles": [
+    {
+      "name": "run.bat_statement_1_IDMC_Summary_...md",
+      "path": "/abs/output/...md",
+      "mime": "text/markdown"
+    }
+  ]
 }
 ```
 
@@ -172,7 +209,14 @@ Response (zip):
     "processedFiles": 4,
     "failedFiles": 0,
     "successRate": 100,
-    "results": [ { "fileName": "LoadTMSnapshot.bat", "scriptType": "oracle", "success": true, "extractionResult": { "totalStatements": 1 } } ]
+    "results": [
+      {
+        "fileName": "LoadTMSnapshot.bat",
+        "scriptType": "oracle",
+        "success": true,
+        "extractionResult": { "totalStatements": 1 }
+      }
+    ]
   },
   "zipFilename": "batch_scripts_idmc_summaries_md_2025-10-30T09-00-00-000Z.zip",
   "zipFilePath": "/abs/zips/batch_scripts_idmc_summaries_md_...zip"
@@ -202,7 +246,13 @@ Response:
   "originalContent": "@echo off ...",
   "summary": "## 🔹 Batch File Summary\n\n### 1. Source File ...",
   "jsonContent": "## 🔹 Batch File Summary\n\n### 1. Source File ...",
-  "outputFiles": [ { "name": "run_Summary_...md", "path": "/abs/output/run_Summary_...md", "mime": "text/markdown" } ]
+  "outputFiles": [
+    {
+      "name": "run_Summary_...md",
+      "path": "/abs/output/run_Summary_...md",
+      "mime": "text/markdown"
+    }
+  ]
 }
 ```
 
@@ -232,5 +282,3 @@ Client example:
 
 - Downloads are served only from allowed output roots: `ZIPS_PATH`, `OUTPUT_PATH`, `IDMC_PATH`.
 - For security, provide absolute paths under those roots when using the download API.
-
-

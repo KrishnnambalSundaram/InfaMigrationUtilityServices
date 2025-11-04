@@ -860,21 +860,24 @@ class BatchScriptService {
       // Determine script type based on file extension and content
       let detectedScriptType = scriptType || 'general';
       if (!scriptType) {
-        if (fileExt === '.bat' || fileExt === '.cmd') {
+        if (fileExt === '.bat') {
+          // Windows batch scripts - often Oracle-related
           if (content.includes('sqlplus') || content.includes('@') || content.includes('spool')) {
             detectedScriptType = 'oracle';
           }
-        } else if (fileExt === '.sh' || fileExt === '.bash') {
+        } else if (fileExt === '.sh' || fileExt === '.ksh') {
+          // Shell scripts (.sh, .ksh) - can be Redshift or general
           if (content.includes('psql') || content.includes('-f') || content.includes('\\i')) {
             detectedScriptType = 'redshift';
           }
-        } else if (fileExt === '.sql') {
-          // Check content for Oracle vs Redshift patterns
-          if (content.includes('VARCHAR2') || content.includes('NUMBER') || content.includes('SYSDATE')) {
+        } else if (fileExt === '.py') {
+          // Python scripts - detect from content (could be Oracle, Redshift, or general)
+          if (content.includes('sqlplus') || content.includes('VARCHAR2') || content.includes('NUMBER') || content.includes('SYSDATE')) {
             detectedScriptType = 'oracle';
-          } else if (content.includes('DISTKEY') || content.includes('SORTKEY') || content.includes('COPY')) {
+          } else if (content.includes('psql') || content.includes('DISTKEY') || content.includes('SORTKEY') || content.includes('COPY')) {
             detectedScriptType = 'redshift';
           }
+          // Otherwise remains 'general'
         } else {
           // No extension or unknown extension - detect from content
           if (content.includes('sqlplus') || content.includes('@') || content.includes('spool') || 
@@ -910,18 +913,24 @@ class BatchScriptService {
         log.warn(`Used fallback summary for ${fileName}`);
       }
 
+      // Extract the main IDMC summary for convertedContent field
+      const mainIdmcSummary = idmcSummary || '';
+      
+      const idmcSummariesArray = [{
+        statement: null,
+        type: 'BATCH_SCRIPT',
+        lineNumber: null,
+        idmcSummary: idmcSummary,
+        fileName: `${fileName}_IDMC_Summary.md`
+      }];
+      
       return {
         fileName: fileName,
         scriptType: detectedScriptType,
         extractionResult: { totalStatements: 0, statements: [] },
-        idmcSummaries: [{
-          statement: null,
-          type: 'BATCH_SCRIPT',
-          lineNumber: null,
-          idmcSummary: idmcSummary,
-          fileName: `${fileName}_IDMC_Summary.md`
-        }],
-        originalContent: content,
+        idmcSummaries: idmcSummariesArray,
+        originalContent: content, // ✅ Original file content
+        convertedContent: mainIdmcSummary, // ✅ Converted content for UI consistency (matches Oracle to Snowflake pattern)
         success: true
       };
       
@@ -977,7 +986,8 @@ class BatchScriptService {
         await this.findBatchScriptFiles(fullPath, files);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (ext === '.bat' || ext === '.cmd' || ext === '.sh' || ext === '.bash' || ext === '.sql') {
+        // Supported extensions: .bat, .sh, .ksh, and optionally .py
+        if (ext === '.bat' || ext === '.sh' || ext === '.ksh' || ext === '.py') {
           files.push(fullPath);
         }
       }
