@@ -594,6 +594,188 @@ Please provide a comprehensive IDMC Mapping Summary that follows the exact forma
       throw new Error(`File to IDMC conversion failed: ${error.message}`);
     }
   }
+
+  /**
+   * Convert IDMC Mapping Summary (markdown/text) to fully compliant IDMC mapping JSON (.bat export structure)
+   * @param {string} idmcSummary - The IDMC mapping summary in markdown/text format
+   * @param {string} fileName - Original file name for naming the mapping
+   * @returns {Promise<string>} - JSON string of the IDMC mapping (to be saved as .bat file)
+   */
+  async convertIdmcSummaryToJson(idmcSummary, fileName) {
+    try {
+      if (!this.apiKey || !this.openai) {
+        throw new Error('OpenAI API key not configured');
+      }
+
+      const systemPrompt = `You are an expert Informatica Data Management Cloud (IDMC) metadata generator.
+
+Your task is to convert a given **IDMC Mapping Summary** into a **fully compliant IDMC mapping JSON file** (.bin export structure).
+
+The generated JSON must:
+
+1. Follow the **exact internal structure** of an Informatica Cloud export with these required fields:
+   - "documentType": "MAPPING"
+   - "metadata": { "$$classInfo": {...} } with proper class information
+   - "nodes": array containing all transformation nodes
+   - "links": array containing data flow connections
+   - "groups": array for grouping transformations
+
+2. Include proper node structure:
+   - Each node must have: $$class, $$ID, ##SID, and metadata.$$classInfo
+   - Sources: Use TmplSource class with proper connection references
+   - Transformations: Use TmplExpression for Expression, Filter, Joiner (as Expression placeholder), Aggregator (as Expression placeholder)
+   - Targets: Use TmplTarget class with proper connection references
+
+3. Use **auto-layout coordinates** for transformations:
+   - x increments by 200 for each step
+   - y can be 100 for sources, 200 for transformations, 300 for targets
+   - Start at x=100, y=100
+
+4. Use the following default naming rules:
+   - Mapping Name: extract from summary or use fileName
+   - Sources: prefix with src_
+   - Transformations: as per summary (Expression, Joiner, Filter, Aggregator)
+   - Target: prefix with tgt_
+
+5. Maintain consistent data types from the summary (STRING, INTEGER, DATE/TIMESTAMP).
+
+6. Follow Oracle data adapter conventions for connections.
+
+7. Keep placeholders for unsupported transformations (e.g., anti-join, aggregator) as **Expression** components with clear comments in their expression field.
+
+8. Include proper field definitions with:
+   - name, dataType, length (for strings), precision/scale (for numbers)
+   - Proper field mappings in transformations
+
+9. Create sequential data flow under "links" matching the logical order of transformations.
+
+10. Generate unique IDs for all nodes (use UUIDs or sequential IDs).
+
+OUTPUT FORMAT:
+- Output ONLY valid JSON (no markdown, no code blocks)
+- The JSON must be parseable and valid
+- Include all required metadata fields
+- Ensure proper nesting and structure
+
+EXAMPLE STRUCTURE:
+{
+  "documentType": "MAPPING",
+  "metadata": {
+    "$$classInfo": {
+      "className": "Mapping",
+      "packageName": "com.informatica.cloud.mapping"
+    }
+  },
+  "nodes": [
+    {
+      "$$class": "TmplSource",
+      "$$ID": "source_1",
+      "##SID": "source_1_sid",
+      "name": "src_table1",
+      "metadata": {
+        "$$classInfo": {...}
+      },
+      "connectionId": "oracle_connection",
+      "object": {
+        "path": "SCHEMA.TABLE1"
+      },
+      "fields": [...]
+    },
+    {
+      "$$class": "TmplExpression",
+      "$$ID": "expr_1",
+      "##SID": "expr_1_sid",
+      "name": "Expression1",
+      "x": 300,
+      "y": 200,
+      "fields": [...],
+      "expression": "..."
+    },
+    {
+      "$$class": "TmplTarget",
+      "$$ID": "target_1",
+      "##SID": "target_1_sid",
+      "name": "tgt_table1",
+      "x": 500,
+      "y": 300,
+      "connectionId": "oracle_connection",
+      "object": {
+        "path": "SCHEMA.TARGET_TABLE1"
+      },
+      "fields": [...]
+    }
+  ],
+  "links": [
+    {
+      "fromNode": "source_1",
+      "toNode": "expr_1",
+      "fromField": "field1",
+      "toField": "input_field1"
+    },
+    {
+      "fromNode": "expr_1",
+      "toNode": "target_1",
+      "fromField": "output_field1",
+      "toField": "field1"
+    }
+  ],
+  "groups": []
+}
+
+CRITICAL: Parse the IDMC summary carefully and extract:
+- Mapping name from summary
+- Source tables/objects
+- Transformation types and logic
+- Target tables/objects
+- Field mappings and data types
+- Data flow sequence`;
+
+      const userPrompt = `Convert the following IDMC Mapping Summary into a fully compliant IDMC mapping JSON file.
+
+IDMC Mapping Summary:
+${idmcSummary}
+
+Original File: ${fileName}
+
+Generate the complete JSON structure following all the requirements above. Output ONLY valid JSON, no markdown or code blocks.`;
+
+      const response = await this.openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 8000,
+        response_format: { type: "json_object" }
+      });
+
+      let jsonContent = response.choices[0].message.content.trim();
+      
+      // Remove markdown code blocks if present
+      jsonContent = jsonContent.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      
+      // Validate JSON
+      try {
+        JSON.parse(jsonContent);
+      } catch (parseError) {
+        console.error('Generated JSON is invalid, attempting to fix...');
+        // Try to extract JSON from the response
+        const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          jsonContent = jsonMatch[0];
+        } else {
+          throw new Error('Could not extract valid JSON from response');
+        }
+      }
+      
+      return jsonContent;
+
+    } catch (error) {
+      console.error('Error converting IDMC summary to JSON:', error);
+      throw new Error(`IDMC summary to JSON conversion failed: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new IDMCConversionService();

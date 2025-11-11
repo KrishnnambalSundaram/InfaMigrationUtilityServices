@@ -290,6 +290,37 @@ const validateWebSocketNotification = [
   handleValidationErrors
 ];
 
+// IDMC Summary to JSON validation
+const validateIdmcSummaryToJson = [
+  body('zipFilePath')
+    .optional()
+    .isString()
+    .withMessage('zipFilePath must be a string')
+    .matches(/\.zip$/i)
+    .withMessage('zipFilePath must point to a ZIP file'),
+  
+  body('sourceCode')
+    .optional()
+    .isString()
+    .withMessage('sourceCode must be a string'),
+  
+  body('fileName')
+    .optional()
+    .isString()
+    .withMessage('fileName must be a string'),
+  
+  body().custom((value, { req }) => {
+    // Either sourceCode or zipFilePath must be provided
+    if (!req.body.sourceCode && !req.body.zipFilePath) {
+      throw new Error('Either sourceCode or zipFilePath is required');
+    }
+    // If sourceCode is provided, fileName is recommended but not strictly required
+    return true;
+  }),
+  
+  handleValidationErrors
+];
+
 // Query parameter validation
 const validatePagination = [
   query('page')
@@ -341,6 +372,7 @@ module.exports = {
   validateUnifiedConvert,
   validateUnifiedBatch,
   validateBatchProcessing,
+  validateIdmcSummaryToJson,
   validateJobId,
   validateDownloadRequest,
   validateWebSocketNotification,
