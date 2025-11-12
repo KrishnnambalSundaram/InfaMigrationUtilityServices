@@ -242,6 +242,106 @@ FROM customers c
 LEFT JOIN orders o ON c.customer_id = o.customer_id
 GROUP BY c.customer_id, c.customer_name;
 
+For Oracle MERGE statements like:
+MERGE INTO dim_customer d
+USING (
+    SELECT
+        s.customer_id,
+        s.customer_name,
+        s.customer_email,
+        s.customer_segment,
+        TO_DATE(:$$BATCH_DATE, 'YYYY-MM-DD') AS batch_dt
+    FROM stg_customer s
+) src
+ON (
+    d.customer_id = src.customer_id
+    AND d.is_active = 'Y'
+)
+WHEN MATCHED THEN
+    UPDATE SET 
+        d.is_active = 'N',
+        d.effective_end_date = src.batch_dt - 1
+    WHERE d.customer_name <> src.customer_name
+       OR d.customer_email <> src.customer_email
+       OR d.customer_segment <> src.customer_segment
+WHEN NOT MATCHED THEN
+    INSERT (
+        customer_key,
+        customer_id,
+        customer_name,
+        customer_email,
+        customer_segment,
+        effective_start_date,
+        effective_end_date,
+        is_active
+    )
+    VALUES (
+        customer_seq.NEXTVAL,
+        src.customer_id,
+        src.customer_name,
+        src.customer_email,
+        src.customer_segment,
+        src.batch_dt,
+        NULL,
+        'Y'
+    );
+
+Convert to EXACTLY this Snowflake format:
+MERGE INTO dim_customer d
+USING (
+    SELECT
+        s.customer_id,
+        s.customer_name,
+        s.customer_email,
+        s.customer_segment,
+        TO_TIMESTAMP(:BATCH_DATE, 'YYYY-MM-DD') AS batch_dt
+    FROM stg_customer s
+) src
+ON (
+    d.customer_id = src.customer_id
+    AND d.is_active = 'Y'
+)
+WHEN MATCHED THEN
+    UPDATE SET 
+        d.is_active = 'N',
+        d.effective_end_date = DATEADD(day, -1, src.batch_dt)
+    WHERE d.customer_name <> src.customer_name
+       OR d.customer_email <> src.customer_email
+       OR d.customer_segment <> src.customer_segment
+WHEN NOT MATCHED THEN
+    INSERT (
+        customer_key,
+        customer_id,
+        customer_name,
+        customer_email,
+        customer_segment,
+        effective_start_date,
+        effective_end_date,
+        is_active
+    )
+    VALUES (
+        customer_seq.NEXTVAL,
+        src.customer_id,
+        src.customer_name,
+        src.customer_email,
+        src.customer_segment,
+        src.batch_dt,
+        NULL,
+        'Y'
+    );
+
+CRITICAL MERGE STATEMENT REQUIREMENTS:
+- ALWAYS preserve the complete MERGE statement structure
+- Convert Oracle TO_DATE to Snowflake TO_TIMESTAMP
+- Convert Oracle parameter syntax :$$PARAM to :PARAM (remove double dollar signs)
+- Convert Oracle date arithmetic (date - 1) to Snowflake DATEADD function
+- Convert Oracle sequence.NEXTVAL to Snowflake sequence.NEXTVAL (same syntax)
+- ALWAYS include the complete MERGE INTO, USING, ON, WHEN MATCHED, WHEN NOT MATCHED clauses
+- NEVER truncate or remove parts of MERGE statements
+- ALWAYS include complete column lists in INSERT clauses
+- ALWAYS include complete VALUES clauses
+- ALWAYS preserve WHERE conditions in UPDATE clauses
+
 CRITICAL REQUIREMENTS:
 - NEVER change this exact syntax format
 - ALWAYS use this exact structure
@@ -333,44 +433,65 @@ ${oracleCode}`;
     cleaned = cleaned.replace(/^-- Converted from.*?\n/gm, '');
     cleaned = cleaned.replace(/^-- Conversion Timestamp:.*?\n/gm, '');
     
-    // Remove lines that start with explanatory text or comments
-    cleaned = cleaned.replace(/^.*?(?:converted|snowflake|oracle|migration|equivalent|replacement|TODO|NOTE|WARNING|conversion|migrated).*?\n/gm, '');
-    
     // Remove empty comment lines and standalone comments
     cleaned = cleaned.replace(/^--\s*$/gm, '');
     cleaned = cleaned.replace(/^--\s*[A-Za-z].*?\n/gm, '');
     
-    // Remove any lines that don't start with CREATE, ALTER, DROP, or other SQL keywords
-    // But keep the actual SQL content
+    // Remove lines that are clearly explanatory text (but preserve SQL content)
+    // Only remove lines that are standalone explanatory sentences, not SQL code
     const lines = cleaned.split('\n');
     const filteredLines = lines.filter(line => {
       const trimmed = line.trim();
-      // Keep empty lines, SQL statements, and JavaScript code
-      return trimmed === '' || 
-             trimmed.startsWith('CREATE') || 
-             trimmed.startsWith('ALTER') || 
-             trimmed.startsWith('DROP') || 
-             trimmed.startsWith('INSERT') || 
-             trimmed.startsWith('UPDATE') || 
-             trimmed.startsWith('DELETE') || 
-             trimmed.startsWith('SELECT') || 
-             trimmed.startsWith('WITH') ||
-             trimmed.startsWith('$$') ||
-             trimmed.startsWith('RETURNS') ||
-             trimmed.startsWith('LANGUAGE') ||
-             trimmed.startsWith('AS') ||
-             trimmed.startsWith('var ') ||
-             trimmed.startsWith('let ') ||
-             trimmed.startsWith('const ') ||
-             trimmed.startsWith('try {') ||
-             trimmed.startsWith('catch') ||
-             trimmed.startsWith('} catch') ||
-             trimmed.startsWith('}') ||
-             trimmed.startsWith('{') ||
-             trimmed.startsWith('    ') ||
-             trimmed.startsWith('\t') ||
-             trimmed.match(/^[A-Za-z_][A-Za-z0-9_]*\s*[=:]/) || // Variable assignments
-             trimmed.match(/^[A-Za-z_][A-Za-z0-9_]*\s*\(/); // Function calls
+      
+      // Keep empty lines
+      if (trimmed === '') return true;
+      
+      // Remove lines that are clearly explanatory text (not SQL)
+      // Check if line is a standalone explanatory sentence
+      const isExplanatoryText = /^(Here is|Here's|This is|The converted|Converted to|Here's how|The equivalent|This Snowflake|The Snowflake version)/i.test(trimmed) &&
+                                !trimmed.match(/[=<>(),;\[\]{}]/) && // Not SQL (no operators/punctuation)
+                                trimmed.length > 50; // Long enough to be explanatory
+      
+      if (isExplanatoryText) return false;
+      
+      // Remove comment lines that are explanatory
+      if (trimmed.startsWith('--')) {
+        const commentText = trimmed.substring(2).trim().toLowerCase();
+        if (commentText.match(/^(converted|snowflake|oracle|migration|equivalent|replacement|todo|note|warning|conversion|migrated)/)) {
+          return false;
+        }
+      }
+      
+      // Keep all lines that contain SQL-like syntax (operators, identifiers, punctuation, etc.)
+      // This includes column references, expressions, conditions, etc.
+      const hasSqlSyntax = 
+        // SQL keywords (case insensitive)
+        /^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|SELECT|MERGE|INTO|USING|WHEN|MATCHED|NOT|ON|SET|VALUES|WHERE|OR|AND|WITH|FROM|JOIN|LEFT|RIGHT|INNER|OUTER|GROUP|ORDER|HAVING|UNION|EXCEPT|INTERSECT|CASE|WHEN|THEN|ELSE|END|IF|ELSEIF|RETURNS|LANGUAGE|AS|DECLARE|BEGIN|END|LOOP|WHILE|FOR|FOREACH|CONTINUE|BREAK|RETURN|RAISE|EXCEPTION|TRY|CATCH|FINALLY)/i.test(trimmed) ||
+        // SQL operators and punctuation
+        /[=<>!+\-*/%(),;\[\]{}]/.test(trimmed) ||
+        // Column/table references (identifier.identifier or identifier.identifier.identifier)
+        /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?/.test(trimmed) ||
+        // Variable assignments and function calls
+        /^[A-Za-z_][A-Za-z0-9_]*\s*[=:]/.test(trimmed) ||
+        /^[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(trimmed) ||
+        // JavaScript keywords
+        /^(var|let|const|function|if|else|for|while|do|switch|case|default|try|catch|finally|throw|return|break|continue)\s/.test(trimmed) ||
+        // JavaScript delimiters
+        trimmed.startsWith('$$') ||
+        trimmed.startsWith('}') ||
+        trimmed.startsWith('{') ||
+        // Indented lines (continuations)
+        /^\s+/.test(line) ||
+        // String literals
+        /['"]/.test(trimmed) ||
+        // Numbers and NULL
+        /^(NULL|null|TRUE|true|FALSE|false|\d+)/.test(trimmed) ||
+        // Sequence references
+        /\.NEXTVAL/i.test(trimmed) ||
+        // Function calls with dot notation
+        /\.\w+\s*\(/.test(trimmed);
+      
+      return hasSqlSyntax;
     });
     
     cleaned = filteredLines.join('\n');
