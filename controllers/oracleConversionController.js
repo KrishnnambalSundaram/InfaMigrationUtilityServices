@@ -1158,7 +1158,7 @@ const handleUnifiedConvert = async (req, res) => {
   let extractedPath = null;
   let jobId = null;
   try {
-    const { inputType, target, sourceType = 'auto', zipFilePath, sourceCode, fileName, outputFormat = 'json' } = req.body;
+    const { inputType, target, sourceType = 'auto', zipFilePath, sourceCode, fileName, outputFormat = 'json', customFileName } = req.body;
 
     // Single-file conversions
     if (inputType === 'single') {
@@ -1168,7 +1168,10 @@ const handleUnifiedConvert = async (req, res) => {
 
       const outputsRoot = process.env.OUTPUT_PATH || './output';
       await fs.ensureDir(outputsRoot);
-      const baseName = (fileName || 'input.sql').replace(/\s+/g, '_');
+      // Support custom file name, otherwise use fileName or default
+      const baseName = customFileName 
+        ? customFileName.replace(/\s+/g, '_').replace(/\.[^.]+$/g, '')
+        : (fileName || 'input.sql').replace(/\s+/g, '_');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       // Emit basic websocket lifecycle for single-file jobs
       const jobIdSingle = `unified_${target}_single_${timestamp}`;
@@ -1180,8 +1183,10 @@ const handleUnifiedConvert = async (req, res) => {
 
       if (target === 'snowflake') {
         const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, baseName);
-        // Save .sql output
-        const outFileName = baseName.endsWith('.sql') ? baseName.replace(/\.sql$/i, `_snowflake_${timestamp}.sql`) : `${baseName}_snowflake_${timestamp}.sql`;
+        // Save .sql output - use customFileName if provided, otherwise use standard naming
+        const outFileName = customFileName 
+          ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}.sql`)
+          : (baseName.endsWith('.sql') ? baseName.replace(/\.sql$/i, `_snowflake_${timestamp}.sql`) : `${baseName}_snowflake_${timestamp}.sql`);
         const outPath = path.join(outputsRoot, outFileName);
         await fs.writeFile(outPath, convertedCode, 'utf8');
         try { progressEmitter.emitStepUpdate(jobIdSingle, 1, 90, 'Saving converted output'); } catch (_) {}
@@ -1189,7 +1194,7 @@ const handleUnifiedConvert = async (req, res) => {
         return res.status(200).json({
           success: true,
           conversionType: 'oracle-to-snowflake',
-          fileName: baseName,
+          fileName: customFileName || baseName,
           jsonContent: convertedCode,
           jobId: jobIdSingle,
           outputFiles: [
@@ -1221,7 +1226,9 @@ const handleUnifiedConvert = async (req, res) => {
       const outputFiles = [];
 
       if (wantJson) {
-        const jsonName = name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.json`);
+        const jsonName = customFileName 
+          ? (customFileName.endsWith('.json') ? customFileName : `${customFileName}.json`)
+          : name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.json`);
         const jsonPath = path.join(outputsRoot, jsonName);
         await fs.writeFile(jsonPath, idmcSummary, 'utf8');
         outputFiles.push({ name: jsonName, path: path.resolve(jsonPath), mime: 'application/json', kind: 'single' });
@@ -1230,7 +1237,9 @@ const handleUnifiedConvert = async (req, res) => {
       if (wantDocx) {
         const documentService = require('../services/documentService');
         const docxBuf = await documentService.markdownToDocxBuffer(idmcSummary, name);
-        const docxName = name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.docx`);
+        const docxName = customFileName 
+          ? (customFileName.endsWith('.docx') ? customFileName : `${customFileName}.docx`)
+          : name.replace(/\.[^.]+$/g, `_IDMC_Summary_${timestamp}.docx`);
         const docxPath = path.join(outputsRoot, docxName);
         await fs.writeFile(docxPath, docxBuf);
         outputFiles.push({ name: docxName, path: path.resolve(docxPath), mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', kind: 'single' });
@@ -1238,7 +1247,9 @@ const handleUnifiedConvert = async (req, res) => {
 
       if (wantSql) {
         // Save the original SQL input for convenience
-        const sqlName = name.endsWith('.sql') ? name.replace(/\.sql$/i, `_original_${timestamp}.sql`) : `${name}_original_${timestamp}.sql`;
+        const sqlName = customFileName 
+          ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}_original.sql`)
+          : (name.endsWith('.sql') ? name.replace(/\.sql$/i, `_original_${timestamp}.sql`) : `${name}_original_${timestamp}.sql`);
         const sqlPath = path.join(outputsRoot, sqlName);
         await fs.writeFile(sqlPath, sourceCode, 'utf8');
         outputFiles.push({ name: sqlName, path: path.resolve(sqlPath), mime: 'text/sql', kind: 'single' });
@@ -1249,7 +1260,7 @@ const handleUnifiedConvert = async (req, res) => {
       return res.status(200).json({
         success: true,
         conversionType: `${resolvedType}-to-idmc`,
-        fileName: name,
+        fileName: customFileName || name,
         jsonContent: idmcSummary,
         originalContent: sourceCode,
         jobId: jobIdSingle,

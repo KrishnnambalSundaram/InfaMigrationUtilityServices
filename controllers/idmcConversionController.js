@@ -281,14 +281,14 @@ const handleConvertOracleToIDMC = async (req, res) => {
   let jobId = null;
   
   try {
-    const { zipFilePath, sourceCode, fileName } = req.body;
+    const { zipFilePath, sourceCode, fileName, customFileName } = req.body;
     
     // Handle direct code input if provided
     if (sourceCode) {
       log.info(`🔄 Processing direct Oracle code to IDMC conversion`);
       
-      // Use the file name provided or default to input.sql
-      const inputFileName = fileName || 'input.sql';
+      // Use custom file name if provided, otherwise use fileName or default to input.sql
+      const inputFileName = customFileName || fileName || 'input.sql';
       
       // Convert the code directly
       const idmcSummary = await idmcConversionService.convertOracleCodeToIdmc(sourceCode, inputFileName);
@@ -301,7 +301,9 @@ const handleConvertOracleToIDMC = async (req, res) => {
       const { outputFormat = 'json' } = req.body || {};
       const outputFiles = [];
       if (outputFormat === 'sql' || outputFormat === 'all') {
-        const sqlName = `${base}_original_${timestamp}.sql`;
+        const sqlName = customFileName 
+          ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}_original.sql`)
+          : `${base}_original_${timestamp}.sql`;
         const sqlPath = require('path').join(outputsRoot, sqlName);
         await fs.writeFile(sqlPath, sourceCode, 'utf8');
         outputFiles.push({ name: sqlName, path: require('path').resolve(sqlPath), mime: 'text/sql', kind: 'single' });
@@ -310,7 +312,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
       return res.status(200).json({
         success: true,
         message: 'Oracle code converted to IDMC successfully',
-        fileName: inputFileName,
+        fileName: customFileName || inputFileName,
         originalContent: sourceCode,
         idmcSummary: idmcSummary,
         convertedContent: idmcSummary,
@@ -442,14 +444,14 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
   let jobId = null;
   
   try {
-    const { zipFilePath, sourceCode, fileName } = req.body;
+    const { zipFilePath, sourceCode, fileName, customFileName } = req.body;
     
     // Handle direct code input if provided
     if (sourceCode) {
       log.info(`🔄 Processing direct Redshift code to IDMC conversion`);
       
-      // Use the file name provided or default to input.sql
-      const inputFileName = fileName || 'input.sql';
+      // Use custom file name if provided, otherwise use fileName or default to input.sql
+      const inputFileName = customFileName || fileName || 'input.sql';
       
       // Convert the code directly
       const idmcSummary = await idmcConversionService.convertRedshiftCodeToIdmc(sourceCode, inputFileName);
@@ -461,7 +463,9 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       const { outputFormat = 'json' } = req.body || {};
       const outputFiles = [];
       if (outputFormat === 'sql' || outputFormat === 'all') {
-        const sqlName = `${base}_original_${timestamp}.sql`;
+        const sqlName = customFileName 
+          ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}_original.sql`)
+          : `${base}_original_${timestamp}.sql`;
         const sqlPath = require('path').join(outputsRoot, sqlName);
         await fs.writeFile(sqlPath, sourceCode, 'utf8');
         outputFiles.push({ name: sqlName, path: require('path').resolve(sqlPath), mime: 'text/sql', kind: 'single' });
@@ -470,7 +474,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       return res.status(200).json({
         success: true,
         message: 'Redshift code converted to IDMC successfully',
-        fileName: inputFileName,
+        fileName: customFileName || inputFileName,
         originalContent: sourceCode,
         idmcSummary: idmcSummary,
         convertedContent: idmcSummary,

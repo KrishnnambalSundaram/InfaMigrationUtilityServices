@@ -13,7 +13,7 @@ const { assertPathUnder } = require('../utils/pathUtils');
 const { createModuleLogger } = require('../utils/logger');
 const log = createModuleLogger('controllers/idmcSummaryToJsonController');
 
-// Helper function to find IDMC summary files (markdown, text, json)
+// Helper function to find IDMC summary files (markdown, text, json, bin)
 async function findIdmcSummaryFiles(directory) {
   const files = [];
   
@@ -28,8 +28,8 @@ async function findIdmcSummaryFiles(directory) {
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         const name = entry.name.toLowerCase();
-        // Look for IDMC summary files
-        if (ext === '.md' || ext === '.txt' || ext === '.json' || 
+        // Look for IDMC summary files - now includes .txt and .bin
+        if (ext === '.md' || ext === '.txt' || ext === '.json' || ext === '.bin' ||
             name.includes('idmc') || name.includes('summary')) {
           files.push(fullPath);
         }
@@ -196,9 +196,62 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
       await fs.ensureDir(outputsRoot);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const base = inputFileName.replace(/\.[^.]+$/g, '');
-      const outFileName = `${base}_IDMC_Mapping_${timestamp}.bat`;
+      
+      // Support custom file name from request body, otherwise use standard naming
+      const customFileName = req.body.customFileName;
+      let outFileName;
+      if (customFileName) {
+        // Use custom name but ensure .bin extension
+        const customBase = customFileName.replace(/\.[^.]+$/g, '');
+        outFileName = `${customBase}.bin`;
+      } else {
+        // Standard naming with .bin extension (changed from .bat)
+        outFileName = `${base}_IDMC_Mapping_${timestamp}.bin`;
+      }
+      
       const outPath = path.join(outputsRoot, outFileName);
       await fs.writeFile(outPath, jsonContent, 'utf8');
+      
+      // Also create other output formats if requested
+      const outputFiles = [{
+        name: outFileName,
+        path: path.resolve(outPath),
+        mime: 'application/octet-stream',
+        kind: 'single'
+      }];
+      
+      // Add other format outputs if requested
+      const { outputFormat = 'bin' } = req.body;
+      
+      // Add TXT format output if requested
+      if (outputFormat === 'all' || outputFormat === 'txt') {
+        const txtFileName = customFileName 
+          ? customFileName.replace(/\.[^.]+$/g, '.txt')
+          : `${base}_IDMC_Mapping_${timestamp}.txt`;
+        const txtPath = path.join(outputsRoot, txtFileName);
+        await fs.writeFile(txtPath, jsonContent, 'utf8');
+        outputFiles.push({
+          name: txtFileName,
+          path: path.resolve(txtPath),
+          mime: 'text/plain',
+          kind: 'single'
+        });
+      }
+      
+      // Add DOC format output if requested
+      if (outputFormat === 'all' || outputFormat === 'doc') {
+        const docFileName = customFileName 
+          ? customFileName.replace(/\.[^.]+$/g, '.doc')
+          : `${base}_IDMC_Mapping_${timestamp}.doc`;
+        const docPath = path.join(outputsRoot, docFileName);
+        await fs.writeFile(docPath, jsonContent, 'utf8');
+        outputFiles.push({
+          name: docFileName,
+          path: path.resolve(docPath),
+          mime: 'application/msword',
+          kind: 'single'
+        });
+      }
       
       return res.status(200).json({
         success: true,
@@ -206,12 +259,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
         fileName: inputFileName,
         originalContent: sourceCode,
         convertedContent: jsonContent,
-        outputFiles: [{
-          name: outFileName,
-          path: path.resolve(outPath),
-          mime: 'application/x-bat',
-          kind: 'single'
-        }]
+        outputFiles: outputFiles
       });
     }
     
@@ -311,8 +359,12 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
     await fs.ensureDir(zipsPath);
     
     // Generate unique zip filename with timestamp
+    // Support custom file name from request body
+    const customFileName = req.body.customFileName;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const zipFileName = `idmc_mapping_bat_${timestamp}.zip`;
+    const zipFileName = customFileName 
+      ? `${customFileName.replace(/\.[^.]+$/g, '')}_${timestamp}.zip`
+      : `idmc_mapping_bin_${timestamp}.zip`; // Changed from .bat to .bin
     const zipPath = path.join(zipsPath, zipFileName);
     
     // Create zip file with converted JSON files

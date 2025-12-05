@@ -25,10 +25,10 @@ async function handleWork(message) {
     log.info(`Worker converting IDMC summary to JSON: ${base}`);
     const jsonContent = await idmcService.convertIdmcSummaryToJson(summaryContent, base);
     
-    // Generate output filename (replace extension with .bat)
+    // Generate output filename (replace extension with .bin - changed from .bat)
     const ext = path.extname(rel);
     const baseName = rel.substring(0, rel.length - ext.length);
-    const outName = `${baseName}_IDMC_Mapping.bat`;
+    const outName = `${baseName}_IDMC_Mapping.bin`;
     
     log.info(`Worker completed conversion: ${base} -> ${outName}`);
     

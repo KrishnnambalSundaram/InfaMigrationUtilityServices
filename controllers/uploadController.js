@@ -6,7 +6,7 @@ const log = createModuleLogger('controllers/uploadController');
 const handleUpload = async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No ZIP file uploaded' });
+      return res.status(400).json({ error: 'No file uploaded' });
     }
 
     log.info(`📁 File uploaded successfully: ${req.file.filename}`);
@@ -14,7 +14,7 @@ const handleUpload = async (req, res) => {
     // Return simple upload confirmation
     res.status(200).json({
       success: true,
-      message: 'Oracle ZIP file uploaded successfully',
+      message: 'File uploaded successfully',
       file: {
         filename: req.file.filename,
         originalName: req.file.originalname,
