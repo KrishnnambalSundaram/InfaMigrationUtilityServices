@@ -196,9 +196,34 @@ const handleProcessBatchScripts = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    
+    // Check if it's actually a ZIP file - if not, treat it as a single file
+    const stats = await fs.stat(zipFilePath);
+    const isZipFile = zipFilePath.toLowerCase().endsWith('.zip');
+    if (!isZipFile || !stats.isFile()) {
+      // It's a single file, not a ZIP - treat it as single file conversion
+      log.info(`📄 Detected single file instead of ZIP: ${zipFilePath}`);
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      const singleFileContent = await fs.readFile(zipFilePath, 'utf8');
+      const singleFileName = path.basename(zipFilePath);
+      // Recursively call with single file handler
+      req.body = {
+        script: singleFileContent,
+        fileName: singleFileName,
+        filePath: zipFilePath,
+        sourceCode: singleFileContent,
+        outputFormat: outputFormat
+      };
+      return handleProcessSingleBatchScript(req, res);
+    }
+    
     // Ensure provided zip path is under allowed roots (uploads or zips)
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -266,13 +291,13 @@ const handleProcessBatchScripts = async (req, res) => {
     log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
     try { progressEmitter.emitStepUpdate(jobId, 2, 10, 'Creating final IDMC package...'); } catch (_) {}
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const suffix = outputFormat === 'txt' ? 'txt' : 'doc';
     const zipFileName = `batch_scripts_idmc_summaries_${suffix}_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     log.info(`📦 Creating zip file: ${zipPath}`);
     log.info(`📊 Processing ${processingResult.results.length} results for zip creation`);
@@ -366,7 +391,7 @@ const handleProcessSingleBatchScript = async (req, res) => {
       }
       // Ensure provided path is under allowed roots
       try {
-        assertPathUnder([config.paths.uploads, config.paths.output, config.paths.zips], filePath, 'File path outside allowed roots');
+        assertPathUnder([config.paths.uploads, config.paths.output], filePath, 'File path outside allowed roots');
       } catch (e) {
         return res.status(400).json({ success: false, error: e.message });
       }
@@ -475,7 +500,7 @@ const handleSummarizeBatchScript = async (req, res) => {
         return res.status(404).json({ success: false, error: `File not found: ${filePath}` });
       }
       try {
-        assertPathUnder([config.paths.uploads, config.paths.output, config.paths.zips], filePath, 'File path outside allowed roots');
+        assertPathUnder([config.paths.uploads, config.paths.output], filePath, 'File path outside allowed roots');
       } catch (e) {
         return res.status(400).json({ success: false, error: e.message });
       }
@@ -657,7 +682,7 @@ const handleGenerateHumanReadableSummarySingle = async (req, res) => {
         return res.status(404).json({ success: false, error: `File not found: ${filePath}` });
       }
       try {
-        assertPathUnder([config.paths.uploads, config.paths.output, config.paths.zips], filePath, 'File path outside allowed roots');
+        assertPathUnder([config.paths.uploads, config.paths.output], filePath, 'File path outside allowed roots');
       } catch (e) {
         return res.status(400).json({ success: false, error: e.message });
       }
@@ -744,9 +769,33 @@ const handleGenerateHumanReadableSummaryZip = async (req, res) => {
         providedPath: zipFilePath
       });
     }
+    
+    // Check if it's actually a ZIP file - if not, treat it as a single file
+    const stats = await fs.stat(zipFilePath);
+    const isZipFile = zipFilePath.toLowerCase().endsWith('.zip');
+    if (!isZipFile || !stats.isFile()) {
+      // It's a single file, not a ZIP - treat it as single file conversion
+      log.info(`📄 Detected single file instead of ZIP: ${zipFilePath}`);
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      const singleFileContent = await fs.readFile(zipFilePath, 'utf8');
+      const singleFileName = path.basename(zipFilePath);
+      // Recursively call with single file handler
+      req.body = {
+        script: singleFileContent,
+        fileName: singleFileName,
+        filePath: zipFilePath,
+        outputFormat: outputFormat
+      };
+      return handleGenerateHumanReadableSummarySingle(req, res);
+    }
+    
     // Ensure provided zip path is under allowed roots
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -823,12 +872,12 @@ const handleGenerateHumanReadableSummaryZip = async (req, res) => {
     try { progressEmitter.emitStepUpdate(jobId, 2, 10, 'Creating final package...'); } catch (_) {}
     
     // Create final ZIP with summaries
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const suffix = outputFormat === 'txt' ? 'txt' : 'doc';
     const zipFileName = `human_readable_summaries_${suffix}_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     log.info(`📦 Creating zip file: ${zipPath}`);
     log.info(`📊 Processing ${processedFiles.length} files for zip creation`);
@@ -966,10 +1015,10 @@ async function createHumanReadableZipFile(processedFiles, zipPath, outputFormat 
 // Batch to IDMC Summary - unified handler for single or zip
 const handleBatchToIdmcSummary = async (req, res) => {
   const { inputType, script, filePath, zipPath, zipFilePath, outputFormat, name } = req.body;
-  let actualZipPath = zipPath || zipFilePath;
+  let actualZipPath = zipPath || zipFilePath || filePath;
   
   if (inputType === 'zip') {
-    // Process ZIP file
+    // Process ZIP file (or single file if filePath is provided)
     req.body = { zipFilePath: actualZipPath, outputFormat };
     return handleProcessBatchScripts(req, res);
   } else {
@@ -982,10 +1031,10 @@ const handleBatchToIdmcSummary = async (req, res) => {
 // Batch to Human Language - unified handler for single or zip
 const handleBatchToHumanLanguage = async (req, res) => {
   const { inputType, script, filePath, zipPath, zipFilePath, outputFormat, name } = req.body;
-  let actualZipPath = zipPath || zipFilePath;
+  let actualZipPath = zipPath || zipFilePath || filePath;
   
   if (inputType === 'zip') {
-    // Process ZIP file
+    // Process ZIP file (or single file if filePath is provided)
     req.body = { zipFilePath: actualZipPath, outputFormat };
     return handleGenerateHumanReadableSummaryZip(req, res);
   } else {

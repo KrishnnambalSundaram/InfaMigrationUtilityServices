@@ -103,13 +103,21 @@ const errorHandler = (err, req, res, next) => {
   err.status = err.status || 'error';
 
   // Log the error
-  logger.error(`${err.statusCode} - ${err.message}`, {
+  const logData = {
+    service: 'oracle-snowflake-migration',
     url: req.originalUrl,
     method: req.method,
     ip: req.ip,
     userAgent: req.get('User-Agent'),
     stack: err.stack
-  });
+  };
+  
+  // Include validation errors if available
+  if (err.errors && Array.isArray(err.errors) && err.errors.length > 0) {
+    logData.validationErrors = err.errors;
+  }
+  
+  logger.error(`${err.statusCode} - ${err.message}`, logData);
 
   let error = { ...err };
   error.message = err.message;

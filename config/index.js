@@ -19,7 +19,7 @@ const config = {
     .filter(Boolean),
   paths: {
     uploads: resolvePathOrDefault('UPLOAD_PATH', './uploads'),
-    zips: resolvePathOrDefault('ZIPS_PATH', './zips'),
+    // Note: ZIPS_PATH removed - all files now use OUTPUT_PATH only
     output: resolvePathOrDefault('OUTPUT_PATH', './output'),
     idmc: resolvePathOrDefault('IDMC_PATH', './idmc'),
     logs: resolvePathOrDefault('LOG_FILE_PATH', './logs'),

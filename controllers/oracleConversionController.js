@@ -457,13 +457,13 @@ const handleTestConversion = async (req, res) => {
     // Step 3: Create final ZIP with converted files
     log.info('📦 Creating final package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     // Generate unique zip filename with timestamp and job ID
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `converted_oracle_snowflake_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     // Create zip file with converted Snowflake files
     await createSnowflakeZipFile(conversionResult.snowflakeFiles, zipPath);
@@ -626,7 +626,7 @@ const handleConvert = async (req, res) => {
       });
     }
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -699,13 +699,13 @@ const handleConvert = async (req, res) => {
     // Step 3: Create final ZIP with converted files
     log.info('📦 Creating final package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     // Generate unique zip filename with timestamp and job ID
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `converted_oracle_snowflake_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     // Create zip file with converted Snowflake files
     await createSnowflakeZipFile(conversionResult.snowflakeFiles, zipPath);
@@ -866,7 +866,6 @@ const serveZipFile = async (req, res) => {
     // If filePath is provided, allow downloading files generated under known output roots
     if (filePath) {
       const allowedRoots = [
-        path.resolve(config.paths.zips),
         path.resolve(config.paths.output),
         path.resolve(config.paths.idmc || './idmc_output')
       ];
@@ -884,45 +883,72 @@ const serveZipFile = async (req, res) => {
       return fs.createReadStream(resolved).pipe(res);
     }
 
-    // Otherwise, support legacy behavior by filename from zips folder only
-    if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    // Lookup filename in output folder only
+    if (!filename) {
       return res.status(400).json({ 
         error: 'Invalid filename',
-        message: 'Filename is required and cannot contain invalid characters',
+        message: 'Filename is required',
         example: { filename: 'converted_oracle_snowflake_2024-01-15T10-30-45-123Z.zip' }
       });
     }
 
-    const zipsPath = config.paths.zips;
-    const zipPath = path.join(zipsPath, filename);
+    // Security check (already validated in middleware, but double-check)
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return res.status(400).json({ 
+        error: 'Invalid filename',
+        message: 'Filename cannot contain invalid characters',
+        example: { filename: 'converted_oracle_snowflake_2024-01-15T10-30-45-123Z.zip' }
+      });
+    }
+
+    // Look for file in output folder only
+    const outputPath = config.paths.output;
+    const resolvedFilePath = path.join(outputPath, filename);
     
     // Check if file exists
-    if (!await fs.pathExists(zipPath)) {
+    if (!await fs.pathExists(resolvedFilePath)) {
       return res.status(404).json({ 
-        error: 'Zip file not found',
+        error: 'File not found',
         filename: filename,
-        message: 'The requested file does not exist or has been removed'
+        message: 'The requested file does not exist or has been removed',
+        searchedPath: outputPath
       });
     }
     
-    // Get file stats for additional validation
-    const stats = await fs.stat(zipPath);
-    if (!stats.isFile()) {
+    // Get file stats
+    const fileStats = await fs.stat(resolvedFilePath);
+    if (!fileStats.isFile()) {
       return res.status(400).json({ 
         error: 'Invalid file type',
         message: 'Requested path is not a file'
       });
     }
     
-    log.info(`📥 Serving converted zip file: ${filename} (${oracleFileAnalysisService.formatFileSize(stats.size)})`);
+    const fileToServe = resolvedFilePath;
+    
+    // Determine content type based on file extension
+    const ext = path.extname(filename).toLowerCase();
+    const contentTypes = {
+      '.zip': 'application/zip',
+      '.json': 'application/json',
+      '.sql': 'text/sql',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc': 'application/msword',
+      '.txt': 'text/plain',
+      '.pdf': 'application/pdf',
+      '.bin': 'application/octet-stream'
+    };
+    const contentType = contentTypes[ext] || 'application/octet-stream';
+    
+    log.info(`📥 Serving file: ${filename} from output folder (${oracleFileAnalysisService.formatFileSize(fileStats.size)})`);
     
     // Set appropriate headers for file download
-    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Content-Length', fileStats.size);
     
     // Stream the file to the client
-    const fileStream = fs.createReadStream(zipPath);
+    const fileStream = fs.createReadStream(fileToServe);
     fileStream.pipe(res);
     
     fileStream.on('error', (error) => {
@@ -1158,12 +1184,29 @@ const handleUnifiedConvert = async (req, res) => {
   let extractedPath = null;
   let jobId = null;
   try {
-    const { inputType, target, sourceType = 'auto', zipFilePath, sourceCode, fileName, outputFormat = 'json', customFileName } = req.body;
+    const { inputType, target, sourceType = 'auto', zipFilePath, filePath, sourceCode, fileName, outputFormat = 'json', customFileName } = req.body;
 
     // Single-file conversions
     if (inputType === 'single') {
-      if (!sourceCode) {
-        return res.status(400).json({ error: 'sourceCode is required for single inputType' });
+      let actualSourceCode = sourceCode;
+      let actualFileName = fileName;
+
+      // Handle filePath if provided instead of sourceCode
+      if (filePath && !actualSourceCode) {
+        if (!await fs.pathExists(filePath)) {
+          return res.status(404).json({ error: `File not found: ${filePath}` });
+        }
+        try {
+          assertPathUnder([config.paths.uploads, config.paths.output], filePath, 'File path outside allowed roots');
+        } catch (e) {
+          return res.status(400).json({ error: e.message });
+        }
+        actualSourceCode = await fs.readFile(filePath, 'utf8');
+        actualFileName = actualFileName || path.basename(filePath);
+      }
+
+      if (!actualSourceCode) {
+        return res.status(400).json({ error: 'sourceCode or filePath is required for single inputType' });
       }
 
       const outputsRoot = process.env.OUTPUT_PATH || './output';
@@ -1171,7 +1214,7 @@ const handleUnifiedConvert = async (req, res) => {
       // Support custom file name, otherwise use fileName or default
       const baseName = customFileName 
         ? customFileName.replace(/\s+/g, '_').replace(/\.[^.]+$/g, '')
-        : (fileName || 'input.sql').replace(/\s+/g, '_');
+        : (actualFileName || 'input.sql').replace(/\s+/g, '_');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       // Emit basic websocket lifecycle for single-file jobs
       const jobIdSingle = `unified_${target}_single_${timestamp}`;
@@ -1182,7 +1225,7 @@ const handleUnifiedConvert = async (req, res) => {
       } catch (_) {}
 
       if (target === 'snowflake') {
-        const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(sourceCode, baseName);
+        const convertedCode = await oracleConversionService.convertOracleCodeToSnowflake(actualSourceCode, baseName);
         // Save .sql output - use customFileName if provided, otherwise use standard naming
         const outFileName = customFileName 
           ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}.sql`)
@@ -1208,16 +1251,16 @@ const handleUnifiedConvert = async (req, res) => {
       const name = baseName;
       let resolvedType = sourceType;
       if (!resolvedType || resolvedType === 'auto') {
-        resolvedType = detectSourceTypeFromNameAndContent(name, sourceCode, 'sql');
+        resolvedType = detectSourceTypeFromNameAndContent(name, actualSourceCode, 'sql');
         if (resolvedType === 'sql') {
           // fallback to existing analyzer if inconclusive
-          resolvedType = idmcService.analyzeSqlContent(sourceCode) || 'sql';
+          resolvedType = idmcService.analyzeSqlContent(actualSourceCode) || 'sql';
         }
       }
 
       const idmcSummary = resolvedType === 'redshift'
-        ? await idmcService.convertRedshiftToIDMC(sourceCode, name, 'sql')
-        : await idmcService.convertOracleToIDMC(sourceCode, name, 'sql');
+        ? await idmcService.convertRedshiftToIDMC(actualSourceCode, name, 'sql')
+        : await idmcService.convertOracleToIDMC(actualSourceCode, name, 'sql');
 
       // Persist outputs per requested format
       const wantJson = outputFormat === 'json' || outputFormat === 'all';
@@ -1251,7 +1294,7 @@ const handleUnifiedConvert = async (req, res) => {
           ? (customFileName.endsWith('.sql') ? customFileName : `${customFileName}_original.sql`)
           : (name.endsWith('.sql') ? name.replace(/\.sql$/i, `_original_${timestamp}.sql`) : `${name}_original_${timestamp}.sql`);
         const sqlPath = path.join(outputsRoot, sqlName);
-        await fs.writeFile(sqlPath, sourceCode, 'utf8');
+        await fs.writeFile(sqlPath, actualSourceCode, 'utf8');
         outputFiles.push({ name: sqlName, path: path.resolve(sqlPath), mime: 'text/sql', kind: 'single' });
       }
 
@@ -1262,21 +1305,54 @@ const handleUnifiedConvert = async (req, res) => {
         conversionType: `${resolvedType}-to-idmc`,
         fileName: customFileName || name,
         jsonContent: idmcSummary,
-        originalContent: sourceCode,
+        originalContent: actualSourceCode,
         jobId: jobIdSingle,
         outputFiles
       });
     }
 
-    // ZIP conversions
-    if (!zipFilePath) {
-      return res.status(400).json({ error: 'zipFilePath is required for zip inputType', example: { zipFilePath: '/path/to/your/files.zip' } });
+    // ZIP conversions - handle both zipFilePath (ZIP file) and filePath (single file)
+    const actualZipFilePath = zipFilePath || filePath;
+    if (!actualZipFilePath) {
+      return res.status(400).json({ error: 'zipFilePath or filePath is required for zip inputType', example: { zipFilePath: '/path/to/your/files.zip' } });
     }
-    if (!await fs.pathExists(zipFilePath)) {
-      return res.status(404).json({ error: 'Zip file not found', providedPath: zipFilePath });
+    if (!await fs.pathExists(actualZipFilePath)) {
+      return res.status(404).json({ error: 'File not found', providedPath: actualZipFilePath });
     }
 
-    const baseName = path.basename(zipFilePath, path.extname(zipFilePath));
+    // Check if it's a single file (not a ZIP) - if so, treat it as a single file conversion
+    const stats = await fs.stat(actualZipFilePath);
+    const isZipFile = actualZipFilePath.toLowerCase().endsWith('.zip');
+    if (!isZipFile || !stats.isFile()) {
+      // It's a single file, not a ZIP - treat it as single file conversion
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output], actualZipFilePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      const singleFileContent = await fs.readFile(actualZipFilePath, 'utf8');
+      const singleFileName = fileName || path.basename(actualZipFilePath);
+      // Recursively call with single inputType
+      req.body = {
+        inputType: 'single',
+        target,
+        sourceType,
+        sourceCode: singleFileContent,
+        fileName: singleFileName,
+        outputFormat,
+        customFileName
+      };
+      return handleUnifiedConvert(req, res);
+    }
+
+    // Validate ZIP file path is under allowed roots
+    try {
+      assertPathUnder([config.paths.uploads, config.paths.output], actualZipFilePath, 'File path outside allowed roots');
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const baseName = path.basename(actualZipFilePath, path.extname(actualZipFilePath));
     jobId = `unified_${target}_${baseName}`;
     const job = progressService.createJob(jobId);
     try {
@@ -1295,13 +1371,13 @@ const handleUnifiedConvert = async (req, res) => {
     progressService.updateProgress(jobId, 0, 15, 'Extracting zip file...');
     progressEmitter.emitStepUpdate(jobId, 0, 15, 'Extracting zip file...');
     try {
-      await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
+      await execAsync(`unzip -q "${actualZipFilePath}" -d "${extractedPath}"`);
     } catch (err) {
       await new Promise((resolve, reject) => {
         const extract = unzipper.Extract({ path: extractedPath });
         extract.on('error', reject);
         extract.on('close', () => setTimeout(resolve, 100));
-        fs.createReadStream(zipFilePath).pipe(extract);
+        fs.createReadStream(actualZipFilePath).pipe(extract);
       });
     }
 
@@ -1316,15 +1392,15 @@ const handleUnifiedConvert = async (req, res) => {
       progressService.updateProgress(jobId, 2, 10, 'Packaging results...');
       progressEmitter.emitStepUpdate(jobId, 2, 10, 'Packaging results...');
 
-      const zipsPath = process.env.ZIPS_PATH || './zips';
-      await fs.ensureDir(zipsPath);
+      const outputPath = config.paths.output;
+      await fs.ensureDir(outputPath);
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const outFmt = (req.body && req.body.outputFormat) || 'sql';
       const wantSql = outFmt === 'sql' || outFmt === 'all';
       const wantJson = outFmt === 'json' || outFmt === 'all';
       const wantDocx = outFmt === 'docx' || outFmt === 'all';
       const outZipName = `converted_oracle_snowflake_${(wantDocx&&wantJson&&wantSql)?'all':(wantDocx?'docx':(wantJson?'json':'sql'))}_${timestamp}.zip`;
-      const outZipPath = path.join(zipsPath, outZipName);
+      const outZipPath = path.join(outputPath, outZipName);
 
       // Build files for zip per requested formats
       const filesForZip = [];
@@ -1428,12 +1504,12 @@ const handleUnifiedConvert = async (req, res) => {
       filesForZip.push(...filesForZipFiltered);
     }
 
-    const zipsPath = process.env.ZIPS_PATH || './zips';
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const suffix = normalizedOutputFormat === 'json' ? 'json' : (normalizedOutputFormat === 'docx' ? 'docx' : (normalizedOutputFormat === 'pdf' ? 'pdf' : 'all'));
     const outZipName = `idmc_summaries_${suffix}_${timestamp}.zip`;
-    const outZipPath = path.join(zipsPath, outZipName);
+    const outZipPath = path.join(outputPath, outZipName);
     await createSnowflakeZipFile(filesForZip, outZipPath); // same zip helper works with {name,content}
     progressService.updateProgress(jobId, 2, 100, 'Completed');
 

@@ -335,7 +335,7 @@ const handleConvertOracleToIDMC = async (req, res) => {
       });
     }
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -387,12 +387,12 @@ const handleConvertOracleToIDMC = async (req, res) => {
     // Create final ZIP with IDMC files
     log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `oracle_idmc_summaries_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     // Create zip file with IDMC summaries
     await createIDMCZipFile(conversionResult.idmcFiles, zipPath);
@@ -497,7 +497,7 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
       });
     }
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], zipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
@@ -549,12 +549,12 @@ const handleConvertRedshiftToIDMC = async (req, res) => {
     // Create final ZIP with IDMC files
     log.info('📦 Creating final IDMC package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `redshift_idmc_summaries_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     // Create zip file with IDMC summaries
     await createIDMCZipFile(conversionResult.idmcFiles, zipPath);
@@ -786,11 +786,11 @@ const handleConvertAutoToIDMC = async (req, res) => {
     }
 
     progressService.updateProgress(jobId, 2, 10, 'Creating final IDMC package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const zipFileName = `auto_idmc_summaries_${timestamp}.zip`;
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     await createIDMCZipFile(idmcFiles, zipPath);
     progressService.updateProgress(jobId, 2, 100, 'Final package created');
 

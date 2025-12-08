@@ -13,9 +13,12 @@ const { assertPathUnder } = require('../utils/pathUtils');
 const { createModuleLogger } = require('../utils/logger');
 const log = createModuleLogger('controllers/idmcSummaryToJsonController');
 
-// Helper function to find IDMC summary files (markdown, text, json, bin)
+// Helper function to find IDMC summary files (markdown, text, json, bin, doc, etc. - but NOT .sql)
 async function findIdmcSummaryFiles(directory) {
   const files = [];
+  
+  // Allowed file extensions for IDMC summary files
+  const allowedExtensions = ['.json', '.md', '.txt', '.bin', '.doc', '.docx'];
   
   async function scanDir(dir) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -28,8 +31,14 @@ async function findIdmcSummaryFiles(directory) {
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         const name = entry.name.toLowerCase();
-        // Look for IDMC summary files - now includes .txt and .bin
-        if (ext === '.md' || ext === '.txt' || ext === '.json' || ext === '.bin' ||
+        
+        // Explicitly exclude .sql files
+        if (ext === '.sql') {
+          continue;
+        }
+        
+        // Look for IDMC summary files with allowed extensions or name patterns
+        if (allowedExtensions.includes(ext) || 
             name.includes('idmc') || name.includes('summary')) {
           files.push(fullPath);
         }
@@ -179,17 +188,56 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
   let jobId = null;
   
   try {
-    const { zipFilePath, sourceCode, fileName } = req.body;
+    const { zipFilePath, filePath, sourceCode, fileName } = req.body;
+    
+    // Handle filePath if provided instead of sourceCode
+    let actualSourceCode = sourceCode;
+    let actualFileName = fileName;
+    if (filePath && !actualSourceCode) {
+      if (!await fs.pathExists(filePath)) {
+        return res.status(404).json({ error: `File not found: ${filePath}` });
+      }
+      
+      // Check file extension - reject .sql files
+      const fileExt = path.extname(filePath).toLowerCase();
+      if (fileExt === '.sql') {
+        return res.status(400).json({ 
+          error: 'Invalid file type',
+          message: 'SQL files (.sql) are not supported for IDMC summary to JSON conversion. Supported formats: .json, .md, .txt, .bin, .doc, .docx'
+        });
+      }
+      
+      // Allowed file extensions
+      const allowedExtensions = ['.json', '.md', '.txt', '.bin', '.doc', '.docx'];
+      if (fileExt && !allowedExtensions.includes(fileExt)) {
+        // Allow files with IDMC or summary in the name even if extension is not in the list
+        const fileNameLower = path.basename(filePath).toLowerCase();
+        if (!fileNameLower.includes('idmc') && !fileNameLower.includes('summary')) {
+          return res.status(400).json({ 
+            error: 'Invalid file type',
+            message: `File extension "${fileExt}" is not supported. Supported formats: .json, .md, .txt, .bin, .doc, .docx`
+          });
+        }
+      }
+      
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output], filePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      actualSourceCode = await fs.readFile(filePath, 'utf8');
+      actualFileName = actualFileName || path.basename(filePath);
+    }
     
     // Handle direct code input (single file conversion)
-    if (sourceCode) {
+    if (actualSourceCode) {
       log.info(`🔄 Processing direct IDMC summary to JSON conversion`);
       
       // Use the file name provided or default to input.md
-      const inputFileName = fileName || 'input.md';
+      const inputFileName = actualFileName || 'input.md';
       
       // Convert the IDMC summary to JSON
-      const jsonContent = await idmcConversionService.convertIdmcSummaryToJson(sourceCode, inputFileName);
+      const jsonContent = await idmcConversionService.convertIdmcSummaryToJson(actualSourceCode, inputFileName);
       
       // Persist output artifacts
       const outputsRoot = config.paths.output;
@@ -257,42 +305,87 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
         success: true,
         message: 'IDMC summary converted to JSON successfully',
         fileName: inputFileName,
-        originalContent: sourceCode,
+        originalContent: actualSourceCode,
         convertedContent: jsonContent,
         outputFiles: outputFiles
       });
     }
     
-    // Handle zip file conversion
-    if (!zipFilePath) {
+    // Handle zip file conversion - support both zipFilePath and filePath
+    const actualZipFilePath = zipFilePath || filePath;
+    if (!actualZipFilePath) {
       return res.status(400).json({ 
-        error: 'Either sourceCode with fileName or zipFilePath is required',
+        error: 'Either sourceCode with fileName, zipFilePath, or filePath is required',
         example: { zipFilePath: '/path/to/your/idmc-summaries.zip' }
       });
     }
     
-    // Check if zip file exists
-    if (!await fs.pathExists(zipFilePath)) {
+    // Check if file exists
+    if (!await fs.pathExists(actualZipFilePath)) {
       return res.status(404).json({ 
-        error: 'Zip file not found',
-        providedPath: zipFilePath
+        error: 'File not found',
+        providedPath: actualZipFilePath
       });
     }
     
+    // Check if it's a single file (not a ZIP) - if so, treat it as a single file conversion
+    const stats = await fs.stat(actualZipFilePath);
+    const isZipFile = actualZipFilePath.toLowerCase().endsWith('.zip');
+    if (!isZipFile || !stats.isFile()) {
+      // It's a single file, not a ZIP - treat it as single file conversion
+      
+      // Check file extension - reject .sql files
+      const fileExt = path.extname(actualZipFilePath).toLowerCase();
+      if (fileExt === '.sql') {
+        return res.status(400).json({ 
+          error: 'Invalid file type',
+          message: 'SQL files (.sql) are not supported for IDMC summary to JSON conversion. Supported formats: .json, .md, .txt, .bin, .doc, .docx'
+        });
+      }
+      
+      // Allowed file extensions
+      const allowedExtensions = ['.json', '.md', '.txt', '.bin', '.doc', '.docx'];
+      if (fileExt && !allowedExtensions.includes(fileExt)) {
+        // Allow files with IDMC or summary in the name even if extension is not in the list
+        const fileNameLower = path.basename(actualZipFilePath).toLowerCase();
+        if (!fileNameLower.includes('idmc') && !fileNameLower.includes('summary')) {
+          return res.status(400).json({ 
+            error: 'Invalid file type',
+            message: `File extension "${fileExt}" is not supported. Supported formats: .json, .md, .txt, .bin, .doc, .docx`
+          });
+        }
+      }
+      
+      try {
+        assertPathUnder([config.paths.uploads, config.paths.output], actualZipFilePath, 'File path outside allowed roots');
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      const singleFileContent = await fs.readFile(actualZipFilePath, 'utf8');
+      const singleFileName = fileName || path.basename(actualZipFilePath);
+      // Recursively call with sourceCode
+      req.body = {
+        sourceCode: singleFileContent,
+        fileName: singleFileName,
+        outputFormat: req.body.outputFormat
+      };
+      return handleConvertIdmcSummaryToJson(req, res);
+    }
+    
     try {
-      assertPathUnder([config.paths.uploads, config.paths.zips], zipFilePath, 'Zip path outside allowed roots');
+      assertPathUnder([config.paths.uploads, config.paths.output], actualZipFilePath, 'File path outside allowed roots');
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
     
     // Create job ID
-    const baseZipName = path.basename(zipFilePath, path.extname(zipFilePath));
+    const baseZipName = path.basename(actualZipFilePath, path.extname(actualZipFilePath));
     jobId = `idmc_summary_json_${baseZipName}`;
     
     // Create progress tracking job
     const job = progressService.createJob(jobId);
     log.info(`🚀 Starting IDMC Summary → JSON conversion job: ${jobId}`);
-    log.info(`📁 Processing zip file: ${zipFilePath}`);
+    log.info(`📁 Processing zip file: ${actualZipFilePath}`);
     
     // Extract the zip file
     log.info('📦 Extracting zip file...');
@@ -303,7 +396,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
     
     // Use system unzip command for better reliability
     try {
-      await execAsync(`unzip -q "${zipFilePath}" -d "${extractedPath}"`);
+      await execAsync(`unzip -q "${actualZipFilePath}" -d "${extractedPath}"`);
       log.info('✅ Zip file extracted using system unzip');
     } catch (error) {
       log.warn('⚠️ System unzip failed, falling back to unzipper library', { message: error.message });
@@ -316,7 +409,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
           setTimeout(resolve, 100);
         });
         
-        fs.createReadStream(zipFilePath)
+        fs.createReadStream(actualZipFilePath)
           .pipe(extract);
       });
     }
@@ -340,7 +433,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
       log.warn('⚠️ No IDMC summary files found to convert');
       return res.status(400).json({
         error: 'No IDMC summary files found in zip',
-        message: 'Please ensure the zip contains .md, .txt, or .json files with IDMC summaries'
+        message: 'Please ensure the zip contains .json, .md, .txt, .bin, .doc, or .docx files with IDMC summaries. SQL files (.sql) are not supported.'
       });
     }
     
@@ -355,8 +448,8 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
     // Step 3: Create final ZIP with converted JSON files
     log.info('📦 Creating final package...');
     progressService.updateProgress(jobId, 2, 10, 'Creating final package...');
-    const zipsPath = config.paths.zips;
-    await fs.ensureDir(zipsPath);
+    const outputPath = config.paths.output;
+    await fs.ensureDir(outputPath);
     
     // Generate unique zip filename with timestamp
     // Support custom file name from request body
@@ -365,7 +458,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
     const zipFileName = customFileName 
       ? `${customFileName.replace(/\.[^.]+$/g, '')}_${timestamp}.zip`
       : `idmc_mapping_bin_${timestamp}.zip`; // Changed from .bat to .bin
-    const zipPath = path.join(zipsPath, zipFileName);
+    const zipPath = path.join(outputPath, zipFileName);
     
     // Create zip file with converted JSON files
     await createIdmcJsonZipFile(conversionResult.idmcJsonFiles, zipPath);
@@ -420,7 +513,7 @@ const handleConvertIdmcSummaryToJson = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'IDMC Summary → JSON conversion completed successfully',
-      source: zipFilePath,
+      source: actualZipFilePath,
       jobId: jobId,
       ...result
     });

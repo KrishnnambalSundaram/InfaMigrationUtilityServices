@@ -87,7 +87,7 @@ const validateJobId = [
   handleValidationErrors
 ];
 
-// Download request validation: allow either filename (zip) OR filePath under allowed roots
+// Download request validation: allow either filename OR filePath under allowed roots
 const validateDownloadRequest = [
   body().custom((value, { req }) => {
     const { filename, filePath } = req.method === 'GET' ? req.query : req.body;
@@ -95,11 +95,15 @@ const validateDownloadRequest = [
       throw new Error('Either filename or filePath is required');
     }
     if (filename) {
-      if (typeof filename !== 'string' || !filename.match(/\.zip$/i)) {
-        throw new Error('When provided, filename must be a .zip file');
+      if (typeof filename !== 'string') {
+        throw new Error('filename must be a string');
       }
       if (filename.length < 1 || filename.length > 255) {
         throw new Error('Filename must be between 1 and 255 characters');
+      }
+      // Security: prevent directory traversal
+      if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        throw new Error('Filename cannot contain invalid characters (.., /, \\)');
       }
     }
     if (filePath) {
@@ -138,9 +142,12 @@ const validateUnifiedConvert = [
   body('zipFilePath')
     .optional()
     .isString()
-    .withMessage('zipFilePath must be a string')
-    .matches(/\.zip$/i)
-    .withMessage('zipFilePath must point to a ZIP file'),
+    .withMessage('zipFilePath must be a string'),
+
+  body('filePath')
+    .optional()
+    .isString()
+    .withMessage('filePath must be a string'),
 
   body('sourceCode')
     .optional()
@@ -156,6 +163,29 @@ const validateUnifiedConvert = [
     .optional()
     .isIn(['json', 'docx', 'pdf', 'all'])
     .withMessage('outputFormat must be one of: json, docx, pdf, all'),
+
+  // Conditional validation: require zipFilePath or filePath for zip inputType, sourceCode or filePath for single inputType
+  body().custom((value, { req }) => {
+    const { inputType, zipFilePath, filePath, sourceCode } = req.body;
+    
+    if (inputType === 'zip') {
+      const hasZipPath = zipFilePath && typeof zipFilePath === 'string' && zipFilePath.trim() !== '';
+      const hasFilePath = filePath && typeof filePath === 'string' && filePath.trim() !== '';
+      if (!hasZipPath && !hasFilePath) {
+        throw new Error('zipFilePath or filePath is required when inputType is "zip"');
+      }
+    }
+    
+    if (inputType === 'single') {
+      const hasSourceCode = sourceCode && typeof sourceCode === 'string' && sourceCode.trim() !== '';
+      const hasFilePath = filePath && typeof filePath === 'string' && filePath.trim() !== '';
+      if (!hasSourceCode && !hasFilePath) {
+        throw new Error('sourceCode or filePath is required when inputType is "single"');
+      }
+    }
+    
+    return true;
+  }),
 
   handleValidationErrors
 ];
@@ -218,55 +248,49 @@ const validateBatchProcessing = [
       return true;
     }),
 
-  // For zip inputType
+  // For zip inputType - allow zipPath, zipFilePath, or filePath (for single files)
   body('zipPath')
     .optional()
     .isString()
-    .withMessage('zipPath must be a string')
-    .custom((value, { req }) => {
-      if (req.body.inputType === 'zip' && !value && !req.body.zipFilePath) {
-        throw new Error('zipPath is required when inputType is "zip"');
-      }
-      if (value && !value.match(/\.zip$/i)) {
-        throw new Error('zipPath must point to a ZIP file');
-      }
-      return true;
-    }),
+    .withMessage('zipPath must be a string'),
 
   body('zipFilePath')
     .optional()
     .isString()
-    .withMessage('zipFilePath must be a string')
-    .custom((value, { req }) => {
-      if (req.body.inputType === 'zip' && !value && !req.body.zipPath) {
-        throw new Error('zipPath or zipFilePath is required when inputType is "zip"');
-      }
-      if (value && !value.match(/\.zip$/i)) {
-        throw new Error('zipFilePath must point to a ZIP file');
-      }
-      return true;
-    }),
+    .withMessage('zipFilePath must be a string'),
 
   // For single inputType
   body('script')
     .optional()
     .isString()
-    .withMessage('script must be a string')
-    .custom((value, { req }) => {
-      if (req.body.inputType === 'single' && !value && !req.body.filePath) {
-        throw new Error('script or filePath is required when inputType is "single"');
-      }
-      return true;
-    }),
+    .withMessage('script must be a string'),
 
   body('filePath')
     .optional()
     .isString()
     .withMessage('filePath must be a string')
     .custom((value, { req }) => {
-      if (req.body.inputType === 'single' && !value && !req.body.script) {
-        throw new Error('script or filePath is required when inputType is "single"');
+      const { inputType, zipPath, zipFilePath, script } = req.body;
+      
+      // For zip inputType: require zipPath, zipFilePath, or filePath
+      if (inputType === 'zip') {
+        const hasZipPath = zipPath && typeof zipPath === 'string' && zipPath.trim() !== '';
+        const hasZipFilePath = zipFilePath && typeof zipFilePath === 'string' && zipFilePath.trim() !== '';
+        const hasFilePath = value && typeof value === 'string' && value.trim() !== '';
+        if (!hasZipPath && !hasZipFilePath && !hasFilePath) {
+          throw new Error('zipPath, zipFilePath, or filePath is required when inputType is "zip"');
+        }
       }
+      
+      // For single inputType: require script or filePath
+      if (inputType === 'single') {
+        const hasScript = script && typeof script === 'string' && script.trim() !== '';
+        const hasFilePath = value && typeof value === 'string' && value.trim() !== '';
+        if (!hasScript && !hasFilePath) {
+          throw new Error('script or filePath is required when inputType is "single"');
+        }
+      }
+      
       return true;
     }),
 
@@ -295,9 +319,12 @@ const validateIdmcSummaryToJson = [
   body('zipFilePath')
     .optional()
     .isString()
-    .withMessage('zipFilePath must be a string')
-    .matches(/\.zip$/i)
-    .withMessage('zipFilePath must point to a ZIP file'),
+    .withMessage('zipFilePath must be a string'),
+  
+  body('filePath')
+    .optional()
+    .isString()
+    .withMessage('filePath must be a string'),
   
   body('sourceCode')
     .optional()
@@ -310,9 +337,14 @@ const validateIdmcSummaryToJson = [
     .withMessage('fileName must be a string'),
   
   body().custom((value, { req }) => {
-    // Either sourceCode or zipFilePath must be provided
-    if (!req.body.sourceCode && !req.body.zipFilePath) {
-      throw new Error('Either sourceCode or zipFilePath is required');
+    // Either sourceCode, zipFilePath, or filePath must be provided
+    const { sourceCode, zipFilePath, filePath } = req.body;
+    const hasSourceCode = sourceCode && typeof sourceCode === 'string' && sourceCode.trim() !== '';
+    const hasZipFilePath = zipFilePath && typeof zipFilePath === 'string' && zipFilePath.trim() !== '';
+    const hasFilePath = filePath && typeof filePath === 'string' && filePath.trim() !== '';
+    
+    if (!hasSourceCode && !hasZipFilePath && !hasFilePath) {
+      throw new Error('Either sourceCode, zipFilePath, or filePath is required');
     }
     // If sourceCode is provided, fileName is recommended but not strictly required
     return true;
